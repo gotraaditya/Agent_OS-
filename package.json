@@ -1,0 +1,28 @@
+{
+  "name": "ai-team-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows desktop command center for coordinating AI coding agents.",
+  "workspaces": [
+    "apps/*",
+    "shared/*"
+  ],
+  "scripts": {
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "dev": "concurrently --kill-others --names BACKEND,WEB,DESKTOP --prefix-colors blue,green,magenta \"npm:dev:backend\" \"npm:dev:web\" \"npm:dev:desktop\"",
+    "dev:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-backend.ps1",
+    "dev:web": "npm run dev --workspace @ai-team-manager/web",
+    "dev:desktop": "wait-on http://127.0.0.1:3000 http://127.0.0.1:8000/api/health && npm run dev --workspace @ai-team-manager/desktop",
+    "build": "npm run build --workspace @ai-team-manager/web",
+    "typecheck": "npm run typecheck --workspace @ai-team-manager/web",
+    "check:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-backend.ps1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "wait-on": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  }
+}

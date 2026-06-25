@@ -1,0 +1,13 @@
+{
+  "name": "@ai-team-manager/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^42.5.0"
+  }
+}
+
