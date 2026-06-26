@@ -1,11 +1,15 @@
 from contextlib import asynccontextmanager
 import os
-from typing import AsyncIterator
+import json
+import time
+from datetime import datetime
+from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from backend.app.database import database_is_ready, initialize_database
+from backend.app.database import database_is_ready, initialize_database, get_db_connection
 
 
 @asynccontextmanager
@@ -24,8 +28,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
-    allow_credentials=False,
-    allow_methods=["GET"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -188,4 +192,464 @@ async def read_file(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# TODO(Phase 3+): Add project workspace, file, task, agent, and activity routes.
+# Pydantic Request Models
+class ProjectCreate(BaseModel):
+    name: str
+    localPath: str
+    branch: str = "main"
+
+class TaskCreate(BaseModel):
+    id: str
+    title: str
+    agentName: str
+    status: str
+    priority: str
+    progress: int = 0
+    description: str = ""
+    relatedFiles: list[str] = []
+    expectedOutput: str = ""
+
+class TaskUpdate(BaseModel):
+    status: Optional[str] = None
+    progress: Optional[int] = None
+    agentName: Optional[str] = None
+
+class AgentCreate(BaseModel):
+    name: str
+    role: str
+    status: str = "online"
+    currentTask: str = "None"
+    progress: int = 0
+    lastActive: str = "Just now"
+    avatar: str = ""
+    logs: list[str] = []
+    description: str = ""
+    capabilities: list[str] = []
+    intelligenceLevel: str = "Low"
+    adapterType: str = "Mock"
+    launchCommand: str = ""
+    isEnabled: bool = True
+
+class AgentUpdate(BaseModel):
+    role: Optional[str] = None
+    status: Optional[str] = None
+    currentTask: Optional[str] = None
+    progress: Optional[int] = None
+    lastActive: Optional[str] = None
+    avatar: Optional[str] = None
+    logs: Optional[list[str]] = None
+    description: Optional[str] = None
+    capabilities: Optional[list[str]] = None
+    intelligenceLevel: Optional[str] = None
+    adapterType: Optional[str] = None
+    launchCommand: Optional[str] = None
+    isEnabled: Optional[bool] = None
+
+class MessageCreate(BaseModel):
+    id: str
+    sender: str
+    senderType: str
+    text: str
+    timestamp: str
+    avatar: Optional[str] = None
+    meta: Optional[dict] = None
+
+class BranchUpdate(BaseModel):
+    branch: str
+
+
+# SQLite Row Serializer Helpers
+def project_to_dict(proj_row, conn) -> dict:
+    p_id = proj_row["id"]
+    cursor = conn.cursor()
+
+    # Load tasks
+    cursor.execute("SELECT * FROM tasks WHERE project_id = ?", (p_id,))
+    tasks = []
+    for r in cursor.fetchall():
+        tasks.append({
+            "id": r["id"],
+            "title": r["title"],
+            "agentName": r["agent_name"],
+            "status": r["status"],
+            "priority": r["priority"],
+            "progress": r["progress"],
+            "description": r["description"],
+            "relatedFiles": json.loads(r["related_files"]) if r["related_files"] else [],
+            "expectedOutput": r["expected_output"]
+        })
+
+    # Load agents
+    cursor.execute("SELECT * FROM agents WHERE project_id = ?", (p_id,))
+    agents = []
+    for r in cursor.fetchall():
+        agents.append({
+            "name": r["name"],
+            "role": r["role"],
+            "status": r["status"],
+            "currentTask": r["current_task"],
+            "progress": r["progress"],
+            "lastActive": r["last_active"],
+            "avatar": r["avatar"],
+            "logs": json.loads(r["logs"]) if r["logs"] else [],
+            "description": r["description"],
+            "capabilities": json.loads(r["capabilities"]) if r["capabilities"] else [],
+            "intelligenceLevel": r["intelligence_level"],
+            "adapterType": r["adapter_type"],
+            "launchCommand": r["launch_command"],
+            "isEnabled": bool(r["enabled"])
+        })
+
+    # Load messages
+    cursor.execute("SELECT * FROM messages WHERE project_id = ?", (p_id,))
+    messages = []
+    for r in cursor.fetchall():
+        messages.append({
+            "id": r["id"],
+            "sender": r["sender"],
+            "senderType": r["sender_type"],
+            "text": r["text"],
+            "timestamp": r["timestamp"],
+            "avatar": r["avatar"],
+            "meta": json.loads(r["meta"]) if r["meta"] else None
+        })
+
+    return {
+        "id": proj_row["id"],
+        "name": proj_row["name"],
+        "localPath": proj_row["local_path"],
+        "lastOpened": proj_row["last_opened"],
+        "status": proj_row["status"],
+        "branch": proj_row["branch"],
+        "taskCount": len(tasks),
+        "agentCount": len(agents),
+        "files": json.loads(proj_row["mock_files"]) if proj_row["mock_files"] else None,
+        "tasks": tasks,
+        "agents": agents,
+        "messages": messages
+    }
+
+
+# DB Entity CRUD REST Endpoints
+@app.get("/api/projects")
+async def get_projects():
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM projects")
+        proj_rows = cursor.fetchall()
+        return [project_to_dict(row, conn) for row in proj_rows]
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects")
+async def create_project(body: ProjectCreate):
+    conn = get_db_connection()
+    try:
+        p_id = f"p-{int(time.time() * 1000)}"
+        name = body.name
+        path = body.localPath
+        branch = body.branch or "main"
+
+        # Generate simple default files tree for fallback
+        default_files = {
+            "name": f"{name.lower().replace(' ', '-')}-root",
+            "path": "/",
+            "isDir": True,
+            "children": [
+                {
+                    "name": "src",
+                    "path": "/src",
+                    "isDir": True,
+                    "children": [
+                        {
+                            "name": "app.py",
+                            "path": "/src/app.py",
+                            "isDir": False,
+                            "language": "python",
+                            "content": f'# {name} main script\nprint("Hello from {name}!")\n'
+                        }
+                    ]
+                },
+                {
+                    "name": "README.md",
+                    "path": "/README.md",
+                    "isDir": False,
+                    "language": "markdown",
+                    "content": f"# {name}\nInitialized by AI Team Manager.\n"
+                }
+            ]
+        }
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO projects (id, name, local_path, last_opened, status, branch, mock_files)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (p_id, name, path, "Just now", "development", branch, json.dumps(default_files))
+        )
+
+        # Add default agents: Codex and AntiGravity
+        cursor.execute(
+            """
+            INSERT INTO agents (
+                project_id, name, role, status, current_task, progress, last_active,
+                avatar, logs, description, capabilities, intelligence_level,
+                adapter_type, launch_command, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                p_id, "Codex", "Lead Coordinator", "online", "Setting up project directory",
+                10, "Just now", "CX", json.dumps([
+                    f"[SYSTEM] Project '{name}' created at path '{path}'.",
+                    f"[SYSTEM] Active branch set to '{branch}'."
+                ]),
+                "Central AI Orchestration agent coordinating developer team members.",
+                json.dumps(["architecture", "debugging", "documentation", "testing", "refactoring"]),
+                "Critical", "API", "node build/codex.js", 1
+            )
+        )
+        cursor.execute(
+            """
+            INSERT INTO agents (
+                project_id, name, role, status, current_task, progress, last_active,
+                avatar, logs, description, capabilities, intelligence_level,
+                adapter_type, launch_command, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                p_id, "AntiGravity", "Backend Architect", "idle", "None",
+                0, "Just now", "AG", json.dumps(["[SYSTEM] Adapter online."]),
+                "Specialized in Python FastAPI, SQLite databases, and server architecture.",
+                json.dumps(["backend", "database", "debugging", "testing"]),
+                "High", "Mock", "python -m agents.antigravity", 1
+            )
+        )
+
+        # Add initialization message
+        m_id = f"m-init-{int(time.time() * 1000)}"
+        cursor.execute(
+            """
+            INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                m_id, p_id, "System", "system",
+                f"Project '{name}' initialized at {path}. Active branch: {branch}.",
+                datetime.now().strftime("%I:%M %p"), None, None
+            )
+        )
+
+        conn.commit()
+
+        # Fetch full details
+        cursor.execute("SELECT * FROM projects WHERE id = ?", (p_id,))
+        proj_row = cursor.fetchone()
+        return project_to_dict(proj_row, conn)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{project_id}/tasks")
+async def create_task(project_id: str, body: TaskCreate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO tasks (
+                id, project_id, title, agent_name, status, priority, progress,
+                description, related_files, expected_output
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                body.id, project_id, body.title, body.agentName, body.status,
+                body.priority, body.progress, body.description,
+                json.dumps(body.relatedFiles), body.expectedOutput
+            )
+        )
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.put("/api/projects/{project_id}/tasks/{task_id}")
+async def update_task(project_id: str, task_id: str, body: TaskUpdate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+
+        fields = []
+        params = []
+        if body.status is not None:
+            fields.append("status = ?")
+            params.append(body.status)
+        if body.progress is not None:
+            fields.append("progress = ?")
+            params.append(body.progress)
+        if body.agentName is not None:
+            fields.append("agent_name = ?")
+            params.append(body.agentName)
+
+        if not fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        params.extend([project_id, task_id])
+        query = f"UPDATE tasks SET {', '.join(fields)} WHERE project_id = ? AND id = ?"
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{project_id}/agents")
+async def create_agent(project_id: str, body: AgentCreate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO agents (
+                project_id, name, role, status, current_task, progress, last_active,
+                avatar, logs, description, capabilities, intelligence_level,
+                adapter_type, launch_command, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id, body.name, body.role, body.status, body.currentTask,
+                body.progress, body.lastActive, body.avatar, json.dumps(body.logs),
+                body.description, json.dumps(body.capabilities), body.intelligenceLevel,
+                body.adapterType, body.launchCommand, 1 if body.isEnabled else 0
+            )
+        )
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.put("/api/projects/{project_id}/agents/{agent_name}")
+async def update_agent(project_id: str, agent_name: str, body: AgentUpdate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+
+        fields = []
+        params = []
+        if body.role is not None:
+            fields.append("role = ?")
+            params.append(body.role)
+        if body.status is not None:
+            fields.append("status = ?")
+            params.append(body.status)
+        if body.currentTask is not None:
+            fields.append("current_task = ?")
+            params.append(body.currentTask)
+        if body.progress is not None:
+            fields.append("progress = ?")
+            params.append(body.progress)
+        if body.lastActive is not None:
+            fields.append("last_active = ?")
+            params.append(body.lastActive)
+        if body.avatar is not None:
+            fields.append("avatar = ?")
+            params.append(body.avatar)
+        if body.logs is not None:
+            fields.append("logs = ?")
+            params.append(json.dumps(body.logs))
+        if body.description is not None:
+            fields.append("description = ?")
+            params.append(body.description)
+        if body.capabilities is not None:
+            fields.append("capabilities = ?")
+            params.append(json.dumps(body.capabilities))
+        if body.intelligenceLevel is not None:
+            fields.append("intelligence_level = ?")
+            params.append(body.intelligenceLevel)
+        if body.adapterType is not None:
+            fields.append("adapter_type = ?")
+            params.append(body.adapterType)
+        if body.launchCommand is not None:
+            fields.append("launch_command = ?")
+            params.append(body.launchCommand)
+        if body.isEnabled is not None:
+            fields.append("enabled = ?")
+            params.append(1 if body.isEnabled else 0)
+
+        if not fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        params.extend([project_id, agent_name])
+        query = f"UPDATE agents SET {', '.join(fields)} WHERE project_id = ? AND name = ?"
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{project_id}/agents/{agent_name}")
+async def delete_agent(project_id: str, agent_name: str):
+    if agent_name == "Codex":
+        raise HTTPException(status_code=400, detail="Codex cannot be deleted")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM agents WHERE project_id = ? AND name = ?", (project_id, agent_name))
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{project_id}/messages")
+async def create_message(project_id: str, body: MessageCreate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                body.id, project_id, body.sender, body.senderType, body.text,
+                body.timestamp, body.avatar, json.dumps(body.meta) if body.meta is not None else None
+            )
+        )
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{project_id}/branch")
+async def update_project_branch(project_id: str, body: BranchUpdate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE projects SET branch = ? WHERE id = ?", (body.branch, project_id))
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()

@@ -41,37 +41,66 @@ const findFileByPath = (node: FileNode, path: string): FileNode | null => {
 
 export const AppShell: React.FC = () => {
   // Project switching & multi-project management state
-  const [projects, setProjects] = useState<Project[]>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("ai_team_projects");
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch (e) {
-          console.error("Failed to parse saved projects", e);
-        }
-      }
-    }
-    return mockProjects;
-  });
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("ai_team_active_project_id");
-      return saved !== null ? saved : "p1";
-    }
-    return "p1";
-  });
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isProjectSwitcherOpen, setIsProjectSwitcherOpen] = useState(false);
   const [switcherDefaultShowAddForm, setSwitcherDefaultShowAddForm] = useState(false);
   const [currentFiles, setCurrentFiles] = useState<FileNode>(mockFiles);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Sync projects and activeProjectId to localStorage
+  // Fetch projects from backend database on mount
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("ai_team_projects", JSON.stringify(projects));
-    }
-  }, [projects]);
+    const fetchProjects = async () => {
+      try {
+        const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+        const response = await fetch(`${backendUrl}/api/projects`);
+        if (response.ok) {
+          const data: Project[] = await response.json();
+          setProjects(data);
 
+          let savedActiveId = localStorage.getItem("ai_team_active_project_id");
+          if (!savedActiveId || !data.some(p => p.id === savedActiveId)) {
+            savedActiveId = data[0]?.id || null;
+          }
+
+          if (savedActiveId) {
+            const activeProj = data.find(p => p.id === savedActiveId);
+            if (activeProj) {
+              setActiveProjectId(savedActiveId);
+              setTasks(activeProj.tasks);
+              setAgents(activeProj.agents);
+              setMessages(activeProj.messages);
+              setSelectedTask(activeProj.tasks.find(t => t.status === "active") || null);
+              setSelectedAgent(activeProj.agents[0] || null);
+
+              if (activeProj.localPath) {
+                try {
+                  const scanRes = await fetch(`${backendUrl}/api/workspace/scan?path=${encodeURIComponent(activeProj.localPath)}`);
+                  if (scanRes.ok) {
+                    const fileTree = await scanRes.json();
+                    setCurrentFiles(fileTree);
+                  } else {
+                    setCurrentFiles(activeProj.files || mockFiles);
+                  }
+                } catch {
+                  setCurrentFiles(activeProj.files || mockFiles);
+                }
+              } else {
+                setCurrentFiles(activeProj.files || mockFiles);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load projects from SQLite database backend", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchProjects();
+  }, []);
+
+  // Save active project selection changes
   useEffect(() => {
     if (typeof window !== "undefined") {
       if (activeProjectId) {
@@ -203,14 +232,14 @@ export const AppShell: React.FC = () => {
           ]);
         } else {
           console.warn("Backend failed to scan, falling back to mock files.");
-          setCurrentFiles(proj.files);
+          setCurrentFiles(proj.files || mockFiles);
         }
       } catch (err) {
         console.error("Failed to fetch folder scan, falling back to mock files.", err);
-        setCurrentFiles(proj.files);
+        setCurrentFiles(proj.files || mockFiles);
       }
     } else {
-      setCurrentFiles(proj.files);
+      setCurrentFiles(proj.files || mockFiles);
     }
   };
 
@@ -221,106 +250,22 @@ export const AppShell: React.FC = () => {
     await loadProjectWorkspace(proj);
   };
 
-  // Load active project on initial mount
-  useEffect(() => {
-    if (activeProjectId) {
-      handleSelectProject(activeProjectId);
+  const handleAddProject = async (name: string, path: string, branch: string = "main") => {
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, localPath: path, branch })
+      });
+      if (response.ok) {
+        const newProj: Project = await response.json();
+        setProjects(prev => [...prev, newProj]);
+        await loadProjectWorkspace(newProj);
+      }
+    } catch (err) {
+      console.error("Failed to create project in local database", err);
     }
-  }, []);
-
-  const handleAddProject = (name: string, path: string, branch: string = "main") => {
-    const newProjId = `p-${Date.now()}`;
-    const newProj: Project = {
-      id: newProjId,
-      name,
-      localPath: path,
-      lastOpened: "Just now",
-      status: "development",
-      taskCount: 1,
-      agentCount: 2,
-      branch: branch || "main",
-      files: {
-        name: `${name.toLowerCase().replace(/\s+/g, "-")}-root`,
-        path: "/",
-        isDir: true,
-        children: [
-          {
-            name: "src",
-            path: "/src",
-            isDir: true,
-            children: [
-              {
-                name: "app.py",
-                path: "/src/app.py",
-                isDir: false,
-                language: "python",
-                content: `# ${name} main script\nprint("Hello from ${name}!")\n`
-              }
-            ]
-          },
-          {
-            name: "README.md",
-            path: "/README.md",
-            isDir: false,
-            language: "markdown",
-            content: `# ${name}\nInitialized by AI Team Manager.\n`
-          }
-        ]
-      },
-      tasks: [
-        {
-          id: "T-1",
-          title: "Initialize project environment",
-          agentName: "Codex",
-          status: "active",
-          priority: "high",
-          progress: 10,
-          description: "Establish basic codebase layout and write the README file.",
-          relatedFiles: ["/README.md"],
-          expectedOutput: "Files tree structure with description."
-        }
-      ],
-      agents: [
-        {
-          name: "Codex",
-          role: "Lead Coordinator",
-          status: "online",
-          currentTask: "Setting up project directory",
-          progress: 10,
-          lastActive: "Just now",
-          avatar: "CX",
-          logs: [
-            `[SYSTEM] Project '${name}' created at path '${path}'.`,
-            `[SYSTEM] Active branch set to '${branch}'.`
-          ]
-        },
-        {
-          name: "AntiGravity",
-          role: "Backend Architect",
-          status: "idle",
-          currentTask: "None",
-          progress: 0,
-          lastActive: "Just now",
-          avatar: "AG",
-          logs: [
-            "[SYSTEM] Adapter online."
-          ]
-        }
-      ],
-      messages: [
-        {
-          id: `m-init-${Date.now()}`,
-          sender: "System",
-          senderType: "system",
-          text: `Project '${name}' initialized at ${path}. Active branch: ${branch}.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }
-      ]
-    };
-
-    const updatedProjects = [...projects, newProj];
-    setProjects(updatedProjects);
-    loadProjectWorkspace(newProj);
   };
 
   const handleArchiveProject = (id: string) => {
@@ -332,15 +277,25 @@ export const AppShell: React.FC = () => {
     }));
   };
 
-  const handleRemoveProject = (id: string) => {
-    const updated = projects.filter(p => p.id !== id);
-    setProjects(updated);
-    if (activeProjectId === id) {
-      if (updated.length > 0) {
-        handleSelectProject(updated[0].id);
-      } else {
-        setActiveProjectId(null);
+  const handleRemoveProject = async (id: string) => {
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${id}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        const updated = projects.filter(p => p.id !== id);
+        setProjects(updated);
+        if (activeProjectId === id) {
+          if (updated.length > 0) {
+            await handleSelectProject(updated[0].id);
+          } else {
+            setActiveProjectId(null);
+          }
+        }
       }
+    } catch (err) {
+      console.error("Failed to delete project from local database", err);
     }
   };
 
@@ -456,177 +411,369 @@ export const AppShell: React.FC = () => {
   };
 
   // Handle task adding
-  const handleAddTask = (newTask: Task) => {
-    setTasks(prev => [...prev, newTask]);
-    
-    // Add system message to feed
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const systemMsg: Message = {
-      id: `M-SYS-${Date.now()}`,
-      sender: "System",
-      senderType: "system",
-      text: `Task ${newTask.id} (${newTask.title}) created by user and assigned to ${newTask.agentName}`,
-      timestamp,
-      taskCard: {
-        id: newTask.id,
-        title: newTask.title,
-        status: newTask.status,
-        agentName: newTask.agentName
-      }
-    };
-    
-    setMessages(prev => [...prev, systemMsg]);
-    setGeneralLogs(prev => [
-      ...prev,
-      `[ACTION] User created task ${newTask.id} and assigned to ${newTask.agentName}.`
-    ]);
+  const handleAddTask = async (newTask: Task) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: newTask.id,
+          title: newTask.title,
+          agentName: newTask.agentName,
+          status: newTask.status,
+          priority: newTask.priority,
+          progress: newTask.progress || 0,
+          description: newTask.description || "",
+          relatedFiles: newTask.relatedFiles || [],
+          expectedOutput: newTask.expectedOutput || ""
+        })
+      });
+      if (response.ok) {
+        setTasks(prev => [...prev, newTask]);
 
-    // Set as active selected task
-    setSelectedTask(newTask);
-    setSelectedFile(null);
-    setActiveLeftTab("tasks");
-    setActiveInspectorTab("changes");
+        // Add system message to feed
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const systemMsg: Message = {
+          id: `M-SYS-TASK-${Date.now()}`,
+          sender: "System",
+          senderType: "system",
+          text: `Task ${newTask.id} (${newTask.title}) created and assigned to @${newTask.agentName}.`,
+          timestamp,
+          taskCard: {
+            id: newTask.id,
+            title: newTask.title,
+            status: newTask.status,
+            agentName: newTask.agentName
+          }
+        };
+
+        // Save message to database
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: null,
+            meta: { taskCard: systemMsg.taskCard }
+          })
+        });
+
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[ACTION] User created task ${newTask.id} and assigned to ${newTask.agentName}.`
+        ]);
+
+        // Set as active selected task
+        setSelectedTask(newTask);
+        setSelectedFile(null);
+        setActiveLeftTab("tasks");
+        setActiveInspectorTab("changes");
+      }
+    } catch (err) {
+      console.error("Failed to add task to database", err);
+    }
   };
 
   // Handle agent adding
-  const handleAddAgent = (newAgent: Agent) => {
-    setAgents(prev => [...prev, newAgent]);
+  const handleAddAgent = async (newAgent: Agent) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/agents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newAgent.name,
+          role: newAgent.role,
+          status: newAgent.status,
+          currentTask: newAgent.currentTask || "None",
+          progress: newAgent.progress || 0,
+          lastActive: newAgent.lastActive || "Just now",
+          avatar: newAgent.avatar || "",
+          logs: newAgent.logs || [],
+          description: newAgent.description || "",
+          capabilities: newAgent.capabilities || [],
+          intelligenceLevel: newAgent.intelligenceLevel || "Low",
+          adapterType: newAgent.adapterType || "Mock",
+          launchCommand: newAgent.launchCommand || "",
+          isEnabled: newAgent.isEnabled !== false
+        })
+      });
+      if (response.ok) {
+        setAgents(prev => [...prev, newAgent]);
 
-    // Add system message to feed
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const systemMsg: Message = {
-      id: `M-SYS-AGENT-${Date.now()}`,
-      sender: "System",
-      senderType: "system",
-      text: `Agent '${newAgent.name}' (${newAgent.role}) successfully registered in the project workspace.`,
-      timestamp
-    };
+        // Add system message to feed
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const systemMsg: Message = {
+          id: `M-SYS-AGENT-${Date.now()}`,
+          sender: "System",
+          senderType: "system",
+          text: `Agent '${newAgent.name}' (${newAgent.role}) successfully registered in the project workspace.`,
+          timestamp
+        };
 
-    setMessages(prev => [...prev, systemMsg]);
-    setGeneralLogs(prev => [
-      ...prev,
-      `[REGISTRY] Registered new agent adapter: ${newAgent.name} (Role: ${newAgent.role}).`
-    ]);
+        // Write message to database
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: null,
+            meta: null
+          })
+        });
 
-    // Select the new agent
-    setSelectedAgent(newAgent);
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[REGISTRY] Registered new agent adapter: ${newAgent.name} (Role: ${newAgent.role}).`
+        ]);
+
+        // Select the new agent
+        setSelectedAgent(newAgent);
+      }
+    } catch (err) {
+      console.error("Failed to add agent to database", err);
+    }
   };
 
   // Handle agent updating
-  const handleUpdateAgent = (updatedAgent: Agent) => {
-    setAgents(prev => prev.map(a => a.name === updatedAgent.name ? updatedAgent : a));
+  const handleUpdateAgent = async (updatedAgent: Agent) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/agents/${updatedAgent.name}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: updatedAgent.role,
+          status: updatedAgent.status,
+          currentTask: updatedAgent.currentTask,
+          progress: updatedAgent.progress,
+          lastActive: updatedAgent.lastActive,
+          avatar: updatedAgent.avatar,
+          logs: updatedAgent.logs,
+          description: updatedAgent.description,
+          capabilities: updatedAgent.capabilities,
+          intelligenceLevel: updatedAgent.intelligenceLevel,
+          adapterType: updatedAgent.adapterType,
+          launchCommand: updatedAgent.launchCommand,
+          isEnabled: updatedAgent.isEnabled !== false
+        })
+      });
+      if (response.ok) {
+        setAgents(prev => prev.map(a => a.name === updatedAgent.name ? updatedAgent : a));
 
-    // Update selected agent if we updated the currently selected one
-    if (selectedAgent && selectedAgent.name === updatedAgent.name) {
-      setSelectedAgent(updatedAgent);
+        // Update selected agent if we updated the currently selected one
+        if (selectedAgent && selectedAgent.name === updatedAgent.name) {
+          setSelectedAgent(updatedAgent);
+        }
+
+        // Add system log
+        setGeneralLogs(prev => [
+          ...prev,
+          `[REGISTRY] Updated configuration for agent: ${updatedAgent.name} (Role: ${updatedAgent.role}, Enabled: ${updatedAgent.isEnabled !== false}).`
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to update agent configuration", err);
     }
-
-    // Add system log
-    setGeneralLogs(prev => [
-      ...prev,
-      `[REGISTRY] Updated configuration for agent: ${updatedAgent.name} (Role: ${updatedAgent.role}, Enabled: ${updatedAgent.isEnabled !== false}).`
-    ]);
   };
 
   // Handle agent deleting/unregistering
-  const handleDeleteAgent = (name: string) => {
-    if (name === "Codex") return; // Codex cannot be removed
-    setAgents(prev => prev.filter(a => a.name !== name));
+  const handleDeleteAgent = async (name: string) => {
+    if (name === "Codex" || !activeProjectId) return; // Codex cannot be removed
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/agents/${name}`, {
+        method: "DELETE"
+      });
+      if (response.ok) {
+        setAgents(prev => prev.filter(a => a.name !== name));
 
-    // Deselect if active
-    if (selectedAgent && selectedAgent.name === name) {
-      setSelectedAgent(agents.find(a => a.name !== name) || null);
+        // Deselect if active
+        if (selectedAgent && selectedAgent.name === name) {
+          setSelectedAgent(agents.find(a => a.name !== name) || null);
+        }
+
+        // Add system message
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const systemMsg: Message = {
+          id: `M-SYS-AGENT-DEL-${Date.now()}`,
+          sender: "System",
+          senderType: "system",
+          text: `Agent '${name}' unregistered from the project workspace.`,
+          timestamp
+        };
+
+        // Save message to database
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: null,
+            meta: null
+          })
+        });
+
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[REGISTRY] Unregistered agent: ${name}.`
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to delete agent from database", err);
     }
-
-    // Add system message
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const systemMsg: Message = {
-      id: `M-SYS-AGENT-DEL-${Date.now()}`,
-      sender: "System",
-      senderType: "system",
-      text: `Agent '${name}' unregistered from the project workspace.`,
-      timestamp
-    };
-
-    setMessages(prev => [...prev, systemMsg]);
-    setGeneralLogs(prev => [
-      ...prev,
-      `[REGISTRY] Unregistered agent: ${name}.`
-    ]);
   };
 
   // Switch Git active branch
-  const handleSelectBranch = (newBranch: string) => {
+  const handleSelectBranch = async (newBranch: string) => {
     if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch: newBranch })
+      });
+      if (response.ok) {
+        setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, branch: newBranch } : p));
 
-    setProjects(prev => prev.map(p => {
-      if (p.id === activeProjectId) {
-        return { ...p, branch: newBranch };
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const systemMsg: Message = {
+          id: `M-SYS-BRANCH-${Date.now()}`,
+          sender: "System",
+          senderType: "system",
+          text: `Switched active branch to '${newBranch}'.`,
+          timestamp
+        };
+
+        // Save message to database
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: null,
+            meta: null
+          })
+        });
+
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[GIT] Switched active repository branch to '${newBranch}'.`
+        ]);
       }
-      return p;
-    }));
-
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const systemMsg: Message = {
-      id: `M-SYS-BRANCH-${Date.now()}`,
-      sender: "System",
-      senderType: "system",
-      text: `Switched active branch to '${newBranch}'.`,
-      timestamp
-    };
-
-    setMessages(prev => [...prev, systemMsg]);
-    setGeneralLogs(prev => [
-      ...prev,
-      `[GIT] Switched active repository branch to '${newBranch}'.`
-    ]);
+    } catch (err) {
+      console.error("Failed to switch branch in database", err);
+    }
   };
 
   // Send message to Codex simulator
-  const handleSendMessage = (text: string) => {
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const userMsg: Message = {
-      id: `M-USER-${Date.now()}`,
-      sender: "Aditya Gotra",
-      senderType: "user",
-      text,
-      timestamp,
-      avatar: "AG"
-    };
-
-    setMessages(prev => [...prev, userMsg]);
-    setGeneralLogs(prev => [...prev, `[CHAT] User: "${text}"`]);
-
-    // Simulate Codex response after 1 second
-    setTimeout(() => {
-      const codexTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      let codexReply = "";
-
-      const lowerText = text.toLowerCase();
-      if (lowerText.includes("task") || lowerText.includes("create") || lowerText.includes("new")) {
-        codexReply = "I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter.";
-      } else if (lowerText.includes("status") || lowerText.includes("progress") || lowerText.includes("agents")) {
-        codexReply = "Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues.";
-      } else if (lowerText.includes("help") || lowerText.includes("commands") || lowerText.includes("how")) {
-        codexReply = "I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below.";
-      } else if (lowerText.includes("backend") || lowerText.includes("database")) {
-        codexReply = "The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next.";
-      } else {
-        codexReply = `Understood. I will parse your instruction in the context of the current project branch (Ui). Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace.`;
-      }
-
-      const codexMsg: Message = {
-        id: `M-CODEX-${Date.now()}`,
-        sender: "Codex",
-        senderType: "codex",
-        text: codexReply,
-        timestamp: codexTimestamp,
-        avatar: "CX"
+  const handleSendMessage = async (text: string) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const userMsg: Message = {
+        id: `M-USER-${Date.now()}`,
+        sender: "Aditya Gotra",
+        senderType: "user",
+        text,
+        timestamp,
+        avatar: "AG"
       };
 
-      setMessages(prev => [...prev, codexMsg]);
-      setGeneralLogs(prev => [...prev, `[CHAT] Codex: "${codexReply}"`]);
-    }, 1000);
+      // Save user message to database
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: userMsg.id,
+          sender: userMsg.sender,
+          senderType: userMsg.senderType,
+          text: userMsg.text,
+          timestamp: userMsg.timestamp,
+          avatar: userMsg.avatar,
+          meta: null
+        })
+      });
+
+      if (response.ok) {
+        setMessages(prev => [...prev, userMsg]);
+        setGeneralLogs(prev => [...prev, `[CHAT] User: "${text}"`]);
+
+        // Simulate Codex response after 1 second
+        setTimeout(async () => {
+          const codexTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          let codexReply = "";
+
+          const lowerText = text.toLowerCase();
+          if (lowerText.includes("task") || lowerText.includes("create") || lowerText.includes("new")) {
+            codexReply = "I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter.";
+          } else if (lowerText.includes("status") || lowerText.includes("progress") || lowerText.includes("agents")) {
+            codexReply = "Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues.";
+          } else if (lowerText.includes("help") || lowerText.includes("commands") || lowerText.includes("how")) {
+            codexReply = "I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below.";
+          } else if (lowerText.includes("backend") || lowerText.includes("database")) {
+            codexReply = "The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next.";
+          } else {
+            codexReply = `Understood. I will parse your instruction in the context of the current project branch (Ui). Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace.`;
+          }
+
+          const codexMsg: Message = {
+            id: `M-CODEX-${Date.now()}`,
+            sender: "Codex",
+            senderType: "codex",
+            text: codexReply,
+            timestamp: codexTimestamp,
+            avatar: "CX"
+          };
+
+          // Save Codex message to database
+          await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: codexMsg.id,
+              sender: codexMsg.sender,
+              senderType: codexMsg.senderType,
+              text: codexMsg.text,
+              timestamp: codexMsg.timestamp,
+              avatar: codexMsg.avatar,
+              meta: null
+            })
+          });
+
+          setMessages(prev => [...prev, codexMsg]);
+          setGeneralLogs(prev => [...prev, `[CHAT] Codex: "${codexReply}"`]);
+        }, 1000);
+      }
+    } catch (err) {
+      console.error("Failed to send message to database", err);
+    }
   };
 
   const gridStyle = isInspectorOpen && activeProject
