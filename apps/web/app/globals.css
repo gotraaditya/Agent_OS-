@@ -112,33 +112,38 @@ html, body {
 }
 
 .top-header {
+  display: grid;
+  grid-template-columns: 280px 1fr 300px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-panel);
+  z-index: 10;
+  height: 56px;
+}
+
+.header-brand-section {
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-right: 1px solid var(--border-color);
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.header-center-section {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  border-bottom: 1px solid var(--border-color);
-  background-color: var(--bg-panel);
-  z-index: 10;
-}
-
-.header-left,
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.divider-vertical-dim {
-  width: 1px;
-  height: 20px;
-  background-color: #242831;
+  border-right: 1px solid var(--border-color);
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .header-brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 248px;
+  width: 100%;
   flex-shrink: 0;
 }
 .app-logo {
@@ -196,6 +201,10 @@ html, body {
 }
 .chevron-icon {
   color: var(--text-muted);
+  transition: transform 0.2s ease-in-out;
+}
+.chevron-icon.open {
+  transform: rotate(180deg);
 }
 .branch-selector {
   display: flex;
@@ -334,6 +343,9 @@ html, body {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 0 16px;
+  height: 100%;
+  box-sizing: border-box;
 }
 .divider-vertical {
   width: 1px;
@@ -714,6 +726,18 @@ html, body {
 .feed-message {
   display: flex;
   position: relative;
+  animation: messageSlideIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* System Event message card styling */
@@ -2975,6 +2999,158 @@ html, body {
   background-color: #212431;
   color: var(--text-primary);
   border-color: #3b3f54;
+}
+
+/* 5. AGENT REGISTRY STYLES */
+
+.btn-add-agent:hover {
+  background-color: var(--accent-purple) !important;
+}
+
+.disabled-agent-card {
+  opacity: 0.5;
+  filter: grayscale(40%);
+  border-style: dashed !important;
+}
+
+.disabled-agent-card:hover {
+  opacity: 0.8;
+  filter: grayscale(10%);
+}
+
+.disabled-tag {
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 1px 4px;
+  background-color: #3b2222;
+  border: 1px solid #7f1d1d;
+  color: #ef4444;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.avatar-disabled {
+  background-color: #1e293b !important;
+  color: var(--text-muted) !important;
+}
+
+.agent-card-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-agent-edit-inline {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+
+.agent-card:hover .btn-agent-edit-inline {
+  color: var(--accent-purple);
+  background-color: #141122;
+  border-color: var(--accent-purple-dim);
+}
+
+.btn-agent-edit-inline:hover {
+  color: #ffffff !important;
+  background-color: var(--accent-purple) !important;
+}
+
+/* Capability Tag Input Forms */
+.capabilities-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.cap-badge-btn {
+  font-size: 0.7rem;
+  padding: 4px 8px;
+  background-color: #0b0c10;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cap-badge-btn:hover {
+  border-color: var(--accent-purple);
+  color: var(--text-primary);
+  background-color: #11101a;
+}
+
+.cap-badge-btn.active {
+  background-color: var(--accent-purple-dim);
+  border-color: var(--accent-purple);
+  color: #ffffff;
+}
+
+.custom-caps-selected {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-cap-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  background-color: #141b18;
+  border: 1px solid #1e3a2b;
+  color: #86efac;
+  border-radius: 3px;
+}
+
+.remove-cap-btn {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.remove-cap-btn:hover {
+  color: #f87171;
+}
+
+/* Custom checkbox/toggle styles */
+.custom-toggle-checkbox {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-purple);
+  cursor: pointer;
+}
+
+.toggle-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.btn-delete:hover {
+  background-color: #7f1d1d !important;
+  color: #ffffff !important;
 }
 
 

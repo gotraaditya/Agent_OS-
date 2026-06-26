@@ -7,6 +7,13 @@ export interface Agent {
   lastActive: string;
   avatar: string;
   logs: string[];
+  // Registry fields
+  description?: string;
+  capabilities?: string[];
+  intelligenceLevel?: string;
+  adapterType?: string;
+  launchCommand?: string;
+  isEnabled?: boolean;
 }
 
 export type TaskStatus = "active" | "review" | "completed" | "blocked";

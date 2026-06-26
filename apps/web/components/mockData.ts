@@ -389,7 +389,13 @@ export const mockAgents: Agent[] = [
       "[ACTION] Assigned T-3 to Blackbox.",
       "[REVIEW] Reviewing completed task T-1 (Auth Middleware). Status: APPROVED.",
       "[REVIEW] Reviewing task T-3 (DB Unit Tests). Status: CHANGES REQUESTED."
-    ]
+    ],
+    description: "Central AI Orchestration agent coordinating developer team members.",
+    capabilities: ["architecture", "debugging", "documentation", "testing", "refactoring"],
+    intelligenceLevel: "Critical",
+    adapterType: "API",
+    launchCommand: "node build/codex.js",
+    isEnabled: true
   },
   {
     name: "AntiGravity",
@@ -406,7 +412,13 @@ export const mockAgents: Agent[] = [
       "[TEST] Auth tests passed. Coverage: 100%.",
       "[SUBMIT] Submitted T-1 code implementation to Codex.",
       "[INFO] Task T-1 APPROVED by Codex. Subsystem returning to idle standby."
-    ]
+    ],
+    description: "Specialized in Python FastAPI, SQLite databases, and server architecture.",
+    capabilities: ["backend", "database", "debugging", "testing"],
+    intelligenceLevel: "High",
+    adapterType: "Mock",
+    launchCommand: "python -m agents.antigravity",
+    isEnabled: true
   },
   {
     name: "OpenCode",
@@ -422,7 +434,13 @@ export const mockAgents: Agent[] = [
       "[INFO] Setting up components: Sidebar, Header, Activity timeline.",
       "[INFO] Writing flex layouts and dark mode CSS configurations...",
       "[INFO] Completed Sidebar and Header integration. Layout status: 68% complete."
-    ]
+    ],
+    description: "Specialized in React, Next.js, CSS layouts, and UI component styling.",
+    capabilities: ["frontend", "boilerplate", "refactoring"],
+    intelligenceLevel: "High",
+    adapterType: "Mock",
+    launchCommand: "npm run dev-agent",
+    isEnabled: true
   },
   {
     name: "Blackbox",
@@ -440,7 +458,13 @@ export const mockAgents: Agent[] = [
       "[SUBMIT] Submitted T-3 testing suites to Codex for review.",
       "[INFO] Task T-3 REVIEW FEEDBACK: Codex requested db-lock mock tests.",
       "[ACTION] Implementing mock database locking scenarios in test suites (90% done)..."
-    ]
+    ],
+    description: "Automated test suite generation, unit tests, and coverage analyzer.",
+    capabilities: ["testing", "debugging", "documentation"],
+    intelligenceLevel: "Medium",
+    adapterType: "CLI",
+    launchCommand: "pytest tests/ --cov",
+    isEnabled: true
   },
   {
     name: "Kilocode",
@@ -455,7 +479,13 @@ export const mockAgents: Agent[] = [
       "[ACTION] Started Task T-4: Optimize Docker Build Image Size.",
       "[ERROR] Docker engine daemon not running in dev environment. Cannot run builder check.",
       "[WARN] Task T-4 status set to BLOCKED. Waiting for Docker environment daemon start."
-    ]
+    ],
+    description: "Helper tasks: Docker builds, environment config, boilerplate cleanup.",
+    capabilities: ["devops", "boilerplate"],
+    intelligenceLevel: "Low",
+    adapterType: "CLI",
+    launchCommand: "docker build -t app .",
+    isEnabled: true
   },
   {
     name: "Mimo Code",
@@ -471,7 +501,13 @@ export const mockAgents: Agent[] = [
       "[CSS] Added flex-direction styles inside media query breakpoints.",
       "[SUBMIT] Submitted code changes to Codex.",
       "[INFO] Task T-5 APPROVED by Codex. State set to IDLE."
-    ]
+    ],
+    description: "Assists with simple edits, documentation updates, and linting fixes.",
+    capabilities: ["documentation", "boilerplate"],
+    intelligenceLevel: "Low",
+    adapterType: "Mock",
+    launchCommand: "npm run lint",
+    isEnabled: true
   }
 ];
 

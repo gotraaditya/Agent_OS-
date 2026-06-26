@@ -18,6 +18,8 @@ import { NewTaskModal } from "./NewTaskModal";
 import { CodeViewer } from "./CodeViewer";
 import { ProjectSwitcherModal } from "./ProjectSwitcherModal";
 import { ProjectEmptyState } from "./ProjectEmptyState";
+import { AddAgentModal } from "./AddAgentModal";
+import { EditAgentModal } from "./EditAgentModal";
 
 interface CenterTab {
   id: string;
@@ -57,6 +59,9 @@ export const AppShell: React.FC = () => {
 
   // Modal control
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
+  const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
+  const [isEditAgentOpen, setIsEditAgentOpen] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
 
   // Inspector toggle state
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
@@ -107,6 +112,25 @@ export const AppShell: React.FC = () => {
   ]);
 
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Sync state changes back to projects list so switching projects preserves state
+  useEffect(() => {
+    if (!activeProjectId) return;
+    setProjects(prev => prev.map(p => {
+      if (p.id === activeProjectId) {
+        return {
+          ...p,
+          tasks,
+          agents,
+          messages,
+          files: currentFiles,
+          agentCount: agents.length,
+          taskCount: tasks.length
+        };
+      }
+      return p;
+    }));
+  }, [tasks, agents, messages, currentFiles, activeProjectId]);
 
   const activeProject = projects.find(p => p.id === activeProjectId) || null;
 
@@ -372,6 +396,100 @@ export const AppShell: React.FC = () => {
     setActiveInspectorTab("changes");
   };
 
+  // Handle agent adding
+  const handleAddAgent = (newAgent: Agent) => {
+    setAgents(prev => [...prev, newAgent]);
+
+    // Add system message to feed
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const systemMsg: Message = {
+      id: `M-SYS-AGENT-${Date.now()}`,
+      sender: "System",
+      senderType: "system",
+      text: `Agent '${newAgent.name}' (${newAgent.role}) successfully registered in the project workspace.`,
+      timestamp
+    };
+
+    setMessages(prev => [...prev, systemMsg]);
+    setGeneralLogs(prev => [
+      ...prev,
+      `[REGISTRY] Registered new agent adapter: ${newAgent.name} (Role: ${newAgent.role}).`
+    ]);
+
+    // Select the new agent
+    setSelectedAgent(newAgent);
+  };
+
+  // Handle agent updating
+  const handleUpdateAgent = (updatedAgent: Agent) => {
+    setAgents(prev => prev.map(a => a.name === updatedAgent.name ? updatedAgent : a));
+
+    // Update selected agent if we updated the currently selected one
+    if (selectedAgent && selectedAgent.name === updatedAgent.name) {
+      setSelectedAgent(updatedAgent);
+    }
+
+    // Add system log
+    setGeneralLogs(prev => [
+      ...prev,
+      `[REGISTRY] Updated configuration for agent: ${updatedAgent.name} (Role: ${updatedAgent.role}, Enabled: ${updatedAgent.isEnabled !== false}).`
+    ]);
+  };
+
+  // Handle agent deleting/unregistering
+  const handleDeleteAgent = (name: string) => {
+    if (name === "Codex") return; // Codex cannot be removed
+    setAgents(prev => prev.filter(a => a.name !== name));
+
+    // Deselect if active
+    if (selectedAgent && selectedAgent.name === name) {
+      setSelectedAgent(agents.find(a => a.name !== name) || null);
+    }
+
+    // Add system message
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const systemMsg: Message = {
+      id: `M-SYS-AGENT-DEL-${Date.now()}`,
+      sender: "System",
+      senderType: "system",
+      text: `Agent '${name}' unregistered from the project workspace.`,
+      timestamp
+    };
+
+    setMessages(prev => [...prev, systemMsg]);
+    setGeneralLogs(prev => [
+      ...prev,
+      `[REGISTRY] Unregistered agent: ${name}.`
+    ]);
+  };
+
+  // Switch Git active branch
+  const handleSelectBranch = (newBranch: string) => {
+    if (!activeProjectId) return;
+
+    setProjects(prev => prev.map(p => {
+      if (p.id === activeProjectId) {
+        return { ...p, branch: newBranch };
+      }
+      return p;
+    }));
+
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const systemMsg: Message = {
+      id: `M-SYS-BRANCH-${Date.now()}`,
+      sender: "System",
+      senderType: "system",
+      text: `Switched active branch to '${newBranch}'.`,
+      timestamp
+    };
+
+    setMessages(prev => [...prev, systemMsg]);
+    setGeneralLogs(prev => [
+      ...prev,
+      `[GIT] Switched active repository branch to '${newBranch}'.`
+    ]);
+  };
+
   // Send message to Codex simulator
   const handleSendMessage = (text: string) => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -447,6 +565,7 @@ export const AppShell: React.FC = () => {
           setSwitcherDefaultShowAddForm(true);
           setIsProjectSwitcherOpen(true);
         }}
+        onSelectBranch={handleSelectBranch}
       />
 
       {/* Main Panel Content Grid */}
@@ -543,6 +662,11 @@ export const AppShell: React.FC = () => {
             agents={agents}
             selectedAgentName={selectedAgent?.name || null}
             onSelectAgent={handleSelectAgent}
+            onOpenAddAgent={() => setIsAddAgentOpen(true)}
+            onOpenEditAgent={(agent) => {
+              setEditingAgent(agent);
+              setIsEditAgentOpen(true);
+            }}
           />
         </section>
       ) : (
@@ -600,6 +724,25 @@ export const AppShell: React.FC = () => {
         onArchiveProject={handleArchiveProject}
         onRemoveProject={handleRemoveProject}
         defaultShowAddForm={switcherDefaultShowAddForm}
+      />
+
+      {/* Add Agent Modal */}
+      <AddAgentModal
+        isOpen={isAddAgentOpen}
+        onClose={() => setIsAddAgentOpen(false)}
+        onAddAgent={handleAddAgent}
+      />
+
+      {/* Edit Agent Modal */}
+      <EditAgentModal
+        isOpen={isEditAgentOpen}
+        onClose={() => {
+          setIsEditAgentOpen(false);
+          setEditingAgent(null);
+        }}
+        agent={editingAgent}
+        onUpdateAgent={handleUpdateAgent}
+        onDeleteAgent={handleDeleteAgent}
       />
     </main>
   );
