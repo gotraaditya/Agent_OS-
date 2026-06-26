@@ -41,11 +41,46 @@ const findFileByPath = (node: FileNode, path: string): FileNode | null => {
 
 export const AppShell: React.FC = () => {
   // Project switching & multi-project management state
-  const [projects, setProjects] = useState<Project[]>(mockProjects);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>("p1");
+  const [projects, setProjects] = useState<Project[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("ai_team_projects");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {
+          console.error("Failed to parse saved projects", e);
+        }
+      }
+    }
+    return mockProjects;
+  });
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("ai_team_active_project_id");
+      return saved !== null ? saved : "p1";
+    }
+    return "p1";
+  });
   const [isProjectSwitcherOpen, setIsProjectSwitcherOpen] = useState(false);
   const [switcherDefaultShowAddForm, setSwitcherDefaultShowAddForm] = useState(false);
   const [currentFiles, setCurrentFiles] = useState<FileNode>(mockFiles);
+
+  // Sync projects and activeProjectId to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("ai_team_projects", JSON.stringify(projects));
+    }
+  }, [projects]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      if (activeProjectId) {
+        localStorage.setItem("ai_team_active_project_id", activeProjectId);
+      } else {
+        localStorage.removeItem("ai_team_active_project_id");
+      }
+    }
+  }, [activeProjectId]);
 
   // Tabs & panel controls
   const [activeLeftTab, setActiveLeftTab] = useState<"files" | "tasks" | "knowledge">("files");
@@ -134,15 +169,11 @@ export const AppShell: React.FC = () => {
 
   const activeProject = projects.find(p => p.id === activeProjectId) || null;
 
-  const handleSelectProject = (projectId: string) => {
-    const proj = projects.find(p => p.id === projectId);
-    if (!proj) return;
-
-    setActiveProjectId(projectId);
+  const loadProjectWorkspace = async (proj: Project) => {
+    setActiveProjectId(proj.id);
     setTasks(proj.tasks);
     setAgents(proj.agents);
     setMessages(proj.messages);
-    setCurrentFiles(proj.files);
 
     // Clear selections
     setSelectedFile(null);
@@ -156,7 +187,46 @@ export const AppShell: React.FC = () => {
       { id: "timeline", title: timelineTitle, type: "timeline" }
     ]);
     setActiveCenterTabId("timeline");
+
+    // Scan real directory path if it exists
+    if (proj.localPath) {
+      try {
+        const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+        const response = await fetch(`${backendUrl}/api/workspace/scan?path=${encodeURIComponent(proj.localPath)}`);
+        if (response.ok) {
+          const fileTree = await response.json();
+          setCurrentFiles(fileTree);
+          
+          setGeneralLogs(prev => [
+            ...prev,
+            `[SYSTEM] Scanned workspace folder '${proj.localPath}' successfully.`
+          ]);
+        } else {
+          console.warn("Backend failed to scan, falling back to mock files.");
+          setCurrentFiles(proj.files);
+        }
+      } catch (err) {
+        console.error("Failed to fetch folder scan, falling back to mock files.", err);
+        setCurrentFiles(proj.files);
+      }
+    } else {
+      setCurrentFiles(proj.files);
+    }
   };
+
+  const handleSelectProject = async (projectId: string) => {
+    const proj = projects.find(p => p.id === projectId);
+    if (!proj) return;
+
+    await loadProjectWorkspace(proj);
+  };
+
+  // Load active project on initial mount
+  useEffect(() => {
+    if (activeProjectId) {
+      handleSelectProject(activeProjectId);
+    }
+  }, []);
 
   const handleAddProject = (name: string, path: string, branch: string = "main") => {
     const newProjId = `p-${Date.now()}`;
@@ -250,7 +320,7 @@ export const AppShell: React.FC = () => {
 
     const updatedProjects = [...projects, newProj];
     setProjects(updatedProjects);
-    handleSelectProject(newProjId);
+    loadProjectWorkspace(newProj);
   };
 
   const handleArchiveProject = (id: string) => {
@@ -275,27 +345,49 @@ export const AppShell: React.FC = () => {
   };
 
   // Interactive handler: Select a file
-  const handleSelectFile = (file: FileNode) => {
+  const handleSelectFile = async (file: FileNode) => {
     setSelectedFile(file);
     setSelectedTask(null);
     setSelectedKnowledgeName(null);
     
+    let fileWithContent = file;
+    
+    // If it's a file, has no content populated, and has an absolute/real path, let's fetch it on demand
+    if (!file.isDir && file.content === undefined && (file.path.startsWith("/") || file.path.includes(":"))) {
+      try {
+        const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+        const activeRoot = activeProject?.localPath || "";
+        const response = await fetch(
+          `${backendUrl}/api/workspace/file?path=${encodeURIComponent(file.path)}&root=${encodeURIComponent(activeRoot)}`
+        );
+        if (response.ok) {
+          const data = await response.json();
+          fileWithContent = { ...file, content: data.content, language: data.language || file.language };
+        }
+      } catch (err) {
+        console.error("Failed to read file content from backend", err);
+      }
+    }
+    
     setCenterTabs(prev => {
       const exists = prev.some(tab => tab.id === file.path);
-      if (exists) return prev;
+      if (exists) {
+        // Update the existing tab with the loaded content
+        return prev.map(tab => tab.id === file.path ? { ...tab, file: fileWithContent } : tab);
+      }
       return [
         ...prev,
-        { id: file.path, title: file.name, type: "file", file }
+        { id: file.path, title: file.name, type: "file", file: fileWithContent }
       ];
     });
     setActiveCenterTabId(file.path);
     
     // Append a log and terminal command simulation
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const byteLength = fileWithContent.content?.length || 0;
     setTerminalOutput(prev => [
       ...prev,
-      `C:\\projects\\ai-team-manager> cat .${file.path}`,
-      `[File Read] Opened file ${file.name} (${file.content?.length || 0} bytes)`
+      `C:\\projects\\ai-team-manager> cat "${file.path}"`,
+      `[File Read] Opened file ${file.name} (${byteLength} bytes)`
     ]);
   };
 

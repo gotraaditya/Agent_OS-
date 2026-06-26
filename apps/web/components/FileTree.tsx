@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { FileNode } from "../types";
 
 interface FileTreeProps {
@@ -19,6 +19,16 @@ export const FileTree: React.FC<FileTreeProps> = ({
     "/src": true,
     "/src/components": true
   });
+
+  // Ensure root folder is always expanded when loading a new project tree
+  useEffect(() => {
+    if (node && node.path) {
+      setIsExpanded((prev) => ({
+        ...prev,
+        [node.path]: true
+      }));
+    }
+  }, [node]);
 
   const toggleExpand = (path: string) => {
     setIsExpanded((prev) => ({
