@@ -279,6 +279,10 @@ class ReviewCreate(BaseModel):
     feedback: str
     timestamp: str
 
+
+class SettingsReseedRequest(BaseModel):
+    confirm: str
+
 class BranchUpdate(BaseModel):
     branch: str
 
@@ -944,5 +948,36 @@ async def update_project_branch(project_id: str, body: BranchUpdate):
         cursor.execute("UPDATE projects SET branch = ? WHERE id = ?", (body.branch, project_id))
         conn.commit()
         return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/settings/reseed")
+async def reseed_settings_db(body: SettingsReseedRequest):
+    if body.confirm != "RESET_DATABASE":
+        raise HTTPException(status_code=400, detail="Database reset confirmation is required.")
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM reviews")
+        cursor.execute("DELETE FROM file_changes")
+        cursor.execute("DELETE FROM messages")
+        cursor.execute("DELETE FROM tasks")
+        cursor.execute("DELETE FROM agents")
+        cursor.execute("DELETE FROM projects")
+        cursor.execute("DELETE FROM schema_metadata")
+
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_metadata (key, value) VALUES ('schema_version', '1')"
+        )
+        conn.commit()
+
+        from backend.app.mock_seed import seed_database
+        seed_database(conn)
+        conn.commit()
+        return {"status": "success", "message": "Database successfully re-seeded."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to re-seed database: {str(e)}")
     finally:
         conn.close()

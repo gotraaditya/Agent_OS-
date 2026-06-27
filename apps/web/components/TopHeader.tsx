@@ -14,6 +14,7 @@ interface TopHeaderProps {
   onOpenProjectSwitcher: () => void;
   onOpenCreateProject: () => void;
   onSelectBranch: (branch: string) => void;
+  onOpenSettings?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -29,7 +30,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onSelectProject,
   onOpenProjectSwitcher,
   onOpenCreateProject,
-  onSelectBranch
+  onSelectBranch,
+  onOpenSettings
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
@@ -295,6 +297,15 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
             </svg>
             New Task
           </button>
+
+          {onOpenSettings && (
+            <button className="toolbar-btn btn-settings-shortcut" onClick={onOpenSettings} title="Open System Settings" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", cursor: "pointer", color: "inherit" }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transition: "transform 0.3s ease" }}>
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

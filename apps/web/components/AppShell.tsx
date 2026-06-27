@@ -55,6 +55,7 @@ export const AppShell: React.FC = () => {
         const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
         const response = await fetch(`${backendUrl}/api/projects`);
         if (response.ok) {
+          setIsBackendConnected(true);
           const data: Project[] = await response.json();
           setProjects(data);
 
@@ -90,8 +91,11 @@ export const AppShell: React.FC = () => {
               }
             }
           }
+        } else {
+          setIsBackendConnected(false);
         }
       } catch (err) {
+        setIsBackendConnected(false);
         console.error("Failed to load projects from SQLite database backend", err);
       } finally {
         setIsLoading(false);
@@ -128,6 +132,8 @@ export const AppShell: React.FC = () => {
   const [isAddAgentOpen, setIsAddAgentOpen] = useState(false);
   const [isEditAgentOpen, setIsEditAgentOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isBackendConnected, setIsBackendConnected] = useState(true);
 
   // Inspector toggle state
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
@@ -153,6 +159,7 @@ export const AppShell: React.FC = () => {
         const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
         const response = await fetch(`${backendUrl}/api/projects`);
         if (response.ok && isSubscribed) {
+          setIsBackendConnected(true);
           const data: Project[] = await response.json();
           setProjects(data);
 
@@ -188,8 +195,11 @@ export const AppShell: React.FC = () => {
               }
             }
           }
+        } else {
+          setIsBackendConnected(false);
         }
       } catch (err) {
+        setIsBackendConnected(false);
         console.error("Error polling project updates", err);
       }
     };
@@ -976,6 +986,25 @@ export const AppShell: React.FC = () => {
       className={`app-shell ${isInspectorOpen && activeProject ? "" : "inspector-closed"} ${isResizing ? "is-resizing" : ""}`}
       style={gridStyle}
     >
+      <style>{`
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes blink { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+      `}</style>
+
+      {!isBackendConnected && (
+        <div className="offline-banner" style={{ gridColumn: "1 / -1", background: "#78350f", color: "#fef3c7", padding: "6px 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: 500, gap: "8px", borderBottom: "1px solid #92400e", zIndex: 100 }}>
+          <span className="blink-dot" style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "#f59e0b", animation: "blink 1.5s infinite" }} />
+          <span>⚡ Command Center disconnected. Reconnecting to local SQLite database backend...</span>
+        </div>
+      )}
+
+      {isLoading && (
+        <div className="loading-overlay" style={{ position: "absolute", inset: 0, background: "rgba(17,24,39,0.8)", backdropFilter: "blur(4px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 1000, gap: "16px" }}>
+          <div className="spinner" style={{ width: "36px", height: "36px", border: "3px solid rgba(255,255,255,0.1)", borderTopColor: "#a855f7", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+          <span style={{ fontSize: "14px", fontWeight: 500, color: "#e9d5ff" }}>Initializing Agent OS Workspace...</span>
+        </div>
+      )}
+
       {/* Top Header */}
       <TopHeader
         projectName={activeProject ? activeProject.name : "No Project"}
@@ -997,6 +1026,7 @@ export const AppShell: React.FC = () => {
           setIsProjectSwitcherOpen(true);
         }}
         onSelectBranch={handleSelectBranch}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Main Panel Content Grid */}
@@ -1177,6 +1207,63 @@ export const AppShell: React.FC = () => {
         onUpdateAgent={handleUpdateAgent}
         onDeleteAgent={handleDeleteAgent}
       />
+
+      {isSettingsOpen && (
+        <div className="modal-overlay" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1001 }} onClick={() => setIsSettingsOpen(false)}>
+          <div className="modal-content" style={{ width: "400px", padding: "24px", background: "rgba(30, 41, 59, 0.95)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "8px", color: "#e2e8f0" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+              <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 600 }}>System Settings</h3>
+              <button onClick={() => setIsSettingsOpen(false)} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: "16px" }}>&times;</button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "4px" }}>Backend Server Status</label>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px" }}>
+                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: isBackendConnected ? "#22c55e" : "#ef4444" }} />
+                  <span>{isBackendConnected ? "Connected (127.0.0.1:8000)" : "Disconnected"}</span>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "4px" }}>Active Workspace Branch</label>
+                <span style={{ fontSize: "14px", fontFamily: "monospace", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: "4px" }}>
+                  {activeProject ? activeProject.branch : "N/A"}
+                </span>
+              </div>
+
+              <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "16px", marginTop: "8px" }}>
+                <label style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginBottom: "8px" }}>Database Administration</label>
+                <button
+                  onClick={async () => {
+                    if (confirm("Are you sure you want to reset the database and re-seed all initial mock data? This will clear active simulation records.")) {
+                      try {
+                        const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+                        const res = await fetch(`${backendUrl}/api/settings/reseed`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ confirm: "RESET_DATABASE" })
+                        });
+                        if (res.ok) {
+                          alert("Database successfully reset and re-seeded!");
+                          window.location.reload();
+                        } else {
+                          alert("Failed to reset database: Server returned error");
+                        }
+                      } catch (err) {
+                        alert("Failed to reset database: Connection error");
+                      }
+                    }
+                  }}
+                  style={{ width: "100%", padding: "10px", borderRadius: "4px", background: "#7f1d1d", border: "1px solid #b91c1c", color: "#fca5a5", cursor: "pointer", fontWeight: 500 }}
+                >
+                  Reset & Re-seed Database
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 };
