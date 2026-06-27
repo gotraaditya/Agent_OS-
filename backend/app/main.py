@@ -465,7 +465,7 @@ async def create_project(body: ProjectCreate):
                 0, "Just now", "AG", json.dumps(["[SYSTEM] Adapter online."]),
                 "Specialized in Python FastAPI, SQLite databases, and server architecture.",
                 json.dumps(["backend", "database", "debugging", "testing"]),
-                "High", "Mock", "python -m agents.antigravity", 1
+                "High", "CLI", "python -m agents.antigravity", 1
             )
         )
 
@@ -535,6 +535,19 @@ async def update_task(project_id: str, task_id: str, body: TaskUpdate):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+
+        if body.status is not None and body.status == "completed":
+            # Check if there is an approved review for this task in the reviews table.
+            cursor.execute(
+                "SELECT COUNT(*) FROM reviews WHERE project_id = ? AND task_id = ? AND status = 'approved'",
+                (project_id, task_id)
+            )
+            approved_count = cursor.fetchone()[0]
+            if approved_count == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tasks cannot bypass Codex review. Mark status as 'review' to request approval from the Lead Engineer."
+                )
 
         fields = []
         params = []

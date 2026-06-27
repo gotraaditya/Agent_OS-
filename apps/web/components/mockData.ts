@@ -416,7 +416,7 @@ export const mockAgents: Agent[] = [
     description: "Specialized in Python FastAPI, SQLite databases, and server architecture.",
     capabilities: ["backend", "database", "debugging", "testing"],
     intelligenceLevel: "High",
-    adapterType: "Mock",
+    adapterType: "CLI",
     launchCommand: "python -m agents.antigravity",
     isEnabled: true
   },

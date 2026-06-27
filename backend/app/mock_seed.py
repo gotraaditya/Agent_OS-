@@ -330,7 +330,7 @@ SEED_AGENTS = [
         "description": "Specialized in Python FastAPI, SQLite databases, and server architecture.",
         "capabilities": json.dumps(["backend", "database", "debugging", "testing"]),
         "intelligence_level": "High",
-        "adapter_type": "Mock",
+        "adapter_type": "CLI",
         "launch_command": "python -m agents.antigravity",
         "enabled": 1
     },

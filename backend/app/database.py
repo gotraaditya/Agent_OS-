@@ -149,6 +149,15 @@ def initialize_database() -> None:
             """,
             (DEFAULT_CODEX_LAUNCH_COMMAND,)
         )
+        connection.execute(
+            """
+            UPDATE agents
+            SET adapter_type = 'CLI'
+            WHERE name = 'AntiGravity'
+              AND launch_command = 'python -m agents.antigravity'
+              AND adapter_type = 'Mock'
+            """
+        )
         connection.commit()
 
 
