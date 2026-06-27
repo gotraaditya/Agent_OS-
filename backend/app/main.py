@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from backend.app.database import database_is_ready, initialize_database, get_db_connection
 from backend.app.agents.manager import agent_manager
+from backend.app.agents.codex_adapter import CodexCLIAdapter, DEFAULT_CODEX_LAUNCH_COMMAND
 
 
 async def run_agent_simulation_loop():
@@ -126,7 +127,7 @@ def scan_directory(path: str) -> dict:
     # Standardize path separator to forward slashes for cross-platform frontend consistency
     normalized_path = resolved_path.replace(os.sep, "/")
     name = os.path.basename(normalized_path) or normalized_path
-    
+
     node = {
         "name": name,
         "path": normalized_path,
@@ -447,7 +448,7 @@ async def create_project(body: ProjectCreate):
                 ]),
                 "Central AI Orchestration agent coordinating developer team members.",
                 json.dumps(["architecture", "debugging", "documentation", "testing", "refactoring"]),
-                "Critical", "API", "node build/codex.js", 1
+                "Critical", "API", DEFAULT_CODEX_LAUNCH_COMMAND, 1
             )
         )
         cursor.execute(
@@ -646,8 +647,9 @@ async def update_agent(project_id: str, agent_name: str, body: AgentUpdate):
         conn.close()
 
 
-def generate_codex_response(project_id: str, text: str) -> dict:
+def generate_codex_response(project_id: str, text: str, conn) -> dict:
     lower_text = text.lower()
+    cursor = conn.cursor()
 
     # Check if user tries to direct-command worker agents in V1
     workers = ["@antigravity", "@opencode", "@blackbox", "@kilocode", "@mimocode", "@mimo"]
@@ -664,16 +666,139 @@ def generate_codex_response(project_id: str, text: str) -> dict:
 
         display_names_str = ", ".join(display_names)
         codex_reply = f"In V1, direct communication with worker agents (like {display_names_str}) is disabled to maintain centralized control. Please tell me what you need, and I will handle task assignments and coordination with the team."
+
+        timestamp = datetime.now().strftime("%I:%M %p")
+        if timestamp.startswith("0"): timestamp = timestamp[1:]
+
+        return {
+            "id": f"M-CODEX-{int(time.time() * 1000)}",
+            "sender": "Codex",
+            "senderType": "codex",
+            "text": codex_reply,
+            "timestamp": timestamp,
+            "avatar": "CX",
+            "meta": None
+        }
+
+    # Query launch command for Codex
+    cursor.execute("SELECT launch_command FROM agents WHERE project_id = ? AND name = 'Codex'", (project_id,))
+    row = cursor.fetchone()
+    launch_command = row["launch_command"] if row else DEFAULT_CODEX_LAUNCH_COMMAND
+
+    # Query real Codex agent via CLI
+    adapter = CodexCLIAdapter(launch_command)
+    res = adapter.send_query(text, timeout=5.0)
+
+    use_cli = res["status"] == "success"
+    if not use_cli:
+        print(f"[CODEX CLI ERROR] Failed to connect to real agent: {res.get('error')}")
+
+    # Check if user wants to create/assign a task
+    if any(k in lower_text for k in ["build", "create", "implement", "fix", "add", "write", "optimize", "setup"]):
+        assigned_agent = "AntiGravity"  # Default backend agent
+
+        # Capability Matcher
+        if any(w in lower_text for w in ["frontend", "ui", "css", "html", "page", "dashboard", "component", "button", "view", "interface"]):
+            assigned_agent = "OpenCode"
+        elif any(w in lower_text for w in ["test", "testing", "pytest", "check", "qa", "benchmark"]):
+            assigned_agent = "Blackbox"
+        elif any(w in lower_text for w in ["docker", "image", "container", "devops", "deploy", "alpine", "config"]):
+            assigned_agent = "Kilocode"
+        elif any(w in lower_text for w in ["navbar", "header", "spacing", "padding", "margin", "mobile", "style", "layout"]):
+            assigned_agent = "Mimo Code"
+
+        # Parse task title from request
+        title = "Implement requested updates"
+        words = text.split()
+        for i, word in enumerate(words):
+            if word.lower() in ["build", "create", "implement", "fix", "add", "write", "optimize", "setup"]:
+                title = " ".join(words[i:]).strip()
+                break
+
+        if len(title) > 60:
+            title = title[:57] + "..."
+
+        if title:
+            title = title[0].upper() + title[1:]
+
+        # Fetch current max task ID to increment
+        cursor.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
+        task_rows = cursor.fetchall()
+        max_num = 0
+        for r in task_rows:
+            id_str = r["id"]
+            if id_str.startswith("T-"):
+                try:
+                    num = int(id_str[2:])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+
+        new_task_num = max_num + 1
+        new_task_id = f"T-{new_task_num}"
+
+        # Insert task into database as "assigned"
+        cursor.execute(
+            """
+            INSERT INTO tasks (id, project_id, title, agent_name, status, priority, progress, description, related_files, expected_output)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_task_id, project_id, title, assigned_agent, "assigned", "medium", 0,
+                f"Auto-generated from user prompt: '{text}'",
+                json.dumps(["/src/components/Dashboard.tsx"]),
+                "Simulated correct execution block."
+            )
+        )
+
+        # Insert timeline system notification for task creation
+        timeline_msg_id = f"M-SYS-TASK-ADD-{int(time.time() * 1000)}"
+        timestamp = datetime.now().strftime("%I:%M %p")
+        if timestamp.startswith("0"): timestamp = timestamp[1:]
+
+        cursor.execute(
+            """
+            INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timeline_msg_id, project_id, "System", "system",
+                f"Task {new_task_id} ('{title}') was created and assigned to @{assigned_agent}.",
+                timestamp, None, None
+            )
+        )
+
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = f"[CLI Fallback] I have analyzed your request. I am creating task {new_task_id}: '{title}' and assigning it to @{assigned_agent} based on capability matching. I will monitor their execution progress."
+
     elif any(k in lower_text for k in ["task", "create", "new"]):
-        codex_reply = "I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter."
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = "[CLI Fallback] I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter."
     elif any(k in lower_text for k in ["status", "progress", "agents"]):
-        codex_reply = "Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues."
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = "[CLI Fallback] Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues."
     elif any(k in lower_text for k in ["help", "commands", "how"]):
-        codex_reply = "I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below."
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = "[CLI Fallback] I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below."
     elif any(k in lower_text for k in ["backend", "database"]):
-        codex_reply = "The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next."
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = "[CLI Fallback] The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next."
     else:
-        codex_reply = "Understood. I will parse your instruction in the context of the current project branch. Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace."
+        if use_cli:
+            codex_reply = res["response"]
+        else:
+            codex_reply = "[CLI Fallback] Understood. I will parse your instruction in the context of the current project branch. Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace."
 
     timestamp = datetime.now().strftime("%I:%M %p")
     if timestamp.startswith("0"):
@@ -736,7 +861,7 @@ async def create_message(project_id: str, body: MessageCreate):
 
         # If it's a user message, generate and save Codex response atomically
         if body.senderType == "user":
-            codex_message_dict = generate_codex_response(project_id, body.text)
+            codex_message_dict = generate_codex_response(project_id, body.text, conn)
             cursor.execute(
                 """
                 INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
@@ -765,7 +890,7 @@ async def create_review(project_id: str, body: ReviewCreate):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        
+
         # Insert review record
         rev_id = f"rev-{int(time.time() * 1000)}"
         cursor.execute(
@@ -778,7 +903,7 @@ async def create_review(project_id: str, body: ReviewCreate):
                 body.status, body.feedback, body.timestamp
             )
         )
-        
+
         # Update task status & progress
         if body.status == "approved":
             cursor.execute(
@@ -791,7 +916,7 @@ async def create_review(project_id: str, body: ReviewCreate):
                 "UPDATE tasks SET status = ? WHERE project_id = ? AND id = ?",
                 ("active", project_id, body.taskId)
             )
-            
+
         conn.commit()
         return {"status": "success"}
     finally:

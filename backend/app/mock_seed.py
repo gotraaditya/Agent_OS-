@@ -307,7 +307,7 @@ SEED_AGENTS = [
         "capabilities": json.dumps(["architecture", "debugging", "documentation", "testing", "refactoring"]),
         "intelligence_level": "Critical",
         "adapter_type": "API",
-        "launch_command": "node build/codex.js",
+        "launch_command": "node backend/app/agents/codex_cli_stub.js",
         "enabled": 1
     },
     {

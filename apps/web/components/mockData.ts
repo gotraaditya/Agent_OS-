@@ -93,7 +93,7 @@ def initialize_database():
 def get_current_user(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
     token = authorization.split(" ")[1]
     if token == "codex-secret-token":
         return {"username": "codex", "role": "lead_agent"}
@@ -136,7 +136,7 @@ import { useAgentState } from '../hooks/useAgentState';
 
 export const Dashboard: React.FC = () => {
   const { agents, tasks } = useAgentState();
-  
+
   return (
     <div className="dashboard-grid">
       <div className="summary-card">
@@ -394,7 +394,7 @@ export const mockAgents: Agent[] = [
     capabilities: ["architecture", "debugging", "documentation", "testing", "refactoring"],
     intelligenceLevel: "Critical",
     adapterType: "API",
-    launchCommand: "node build/codex.js",
+    launchCommand: "node backend/app/agents/codex_cli_stub.js",
     isEnabled: true
   },
   {

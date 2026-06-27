@@ -1,5 +1,6 @@
 import sqlite3
 from backend.app.config import DATABASE_DIRECTORY, DATABASE_PATH
+from backend.app.agents.codex_adapter import DEFAULT_CODEX_LAUNCH_COMMAND
 from backend.app.mock_seed import seed_database
 
 
@@ -9,7 +10,7 @@ def initialize_database() -> None:
 
     with sqlite3.connect(DATABASE_PATH, timeout=30.0) as connection:
         connection.execute("PRAGMA foreign_keys = ON;")
-        
+
         # Schema metadata
         connection.execute(
             """
@@ -140,6 +141,15 @@ def initialize_database() -> None:
 
         # Seed the database
         seed_database(connection)
+        connection.execute(
+            """
+            UPDATE agents
+            SET launch_command = ?
+            WHERE name = 'Codex' AND launch_command = 'node build/codex.js'
+            """,
+            (DEFAULT_CODEX_LAUNCH_COMMAND,)
+        )
+        connection.commit()
 
 
 def database_is_ready() -> bool:
