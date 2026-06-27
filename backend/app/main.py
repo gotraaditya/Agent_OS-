@@ -254,6 +254,13 @@ class MessageCreate(BaseModel):
     avatar: Optional[str] = None
     meta: Optional[dict] = None
 
+class ReviewCreate(BaseModel):
+    taskId: str
+    reviewer: str
+    status: str  # "approved" or "changes_requested"
+    feedback: str
+    timestamp: str
+
 class BranchUpdate(BaseModel):
     branch: str
 
@@ -267,6 +274,19 @@ def project_to_dict(proj_row, conn) -> dict:
     cursor.execute("SELECT * FROM tasks WHERE project_id = ?", (p_id,))
     tasks = []
     for r in cursor.fetchall():
+        # Fetch review history for this task
+        cursor.execute(
+            "SELECT * FROM reviews WHERE project_id = ? AND task_id = ? ORDER BY timestamp ASC",
+            (p_id, r["id"])
+        )
+        reviews = []
+        for rev in cursor.fetchall():
+            reviews.append({
+                "reviewer": rev["reviewer_agent_name"],
+                "status": rev["status"],
+                "feedback": rev["comments"],
+                "timestamp": rev["timestamp"]
+            })
         tasks.append({
             "id": r["id"],
             "title": r["title"],
@@ -276,7 +296,8 @@ def project_to_dict(proj_row, conn) -> dict:
             "progress": r["progress"],
             "description": r["description"],
             "relatedFiles": json.loads(r["related_files"]) if r["related_files"] else [],
-            "expectedOutput": r["expected_output"]
+            "expectedOutput": r["expected_output"],
+            "reviewHistory": reviews
         })
 
     # Load agents
@@ -637,6 +658,44 @@ async def create_message(project_id: str, body: MessageCreate):
                 body.timestamp, body.avatar, json.dumps(body.meta) if body.meta is not None else None
             )
         )
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{project_id}/reviews")
+async def create_review(project_id: str, body: ReviewCreate):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Insert review record
+        rev_id = f"rev-{int(time.time() * 1000)}"
+        cursor.execute(
+            """
+            INSERT INTO reviews (id, project_id, task_id, reviewer_agent_name, status, comments, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rev_id, project_id, body.taskId, body.reviewer,
+                body.status, body.feedback, body.timestamp
+            )
+        )
+        
+        # Update task status & progress
+        if body.status == "approved":
+            cursor.execute(
+                "UPDATE tasks SET status = ?, progress = ? WHERE project_id = ? AND id = ?",
+                ("completed", 100, project_id, body.taskId)
+            )
+        else:
+            # For changes requested, set status back to active, but we can keep or reset progress
+            cursor.execute(
+                "UPDATE tasks SET status = ? WHERE project_id = ? AND id = ?",
+                ("active", project_id, body.taskId)
+            )
+            
         conn.commit()
         return {"status": "success"}
     finally:

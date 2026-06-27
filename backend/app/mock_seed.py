@@ -990,6 +990,37 @@ SEED_MESSAGES = [
     }
 ]
 
+SEED_REVIEWS = [
+    {
+        "id": "rev-1",
+        "project_id": "p1",
+        "task_id": "T-1",
+        "reviewer_agent_name": "Codex",
+        "status": "approved",
+        "comments": "Auth middleware verified. Code follows style guide and includes correct HTTP 401 exceptions. Verified database credentials lookup.",
+        "timestamp": "5m ago"
+    },
+    {
+        "id": "rev-2",
+        "project_id": "p1",
+        "task_id": "T-3",
+        "reviewer_agent_name": "Codex",
+        "status": "changes_requested",
+        "comments": "Coverage is excellent (94%), but please add a mock test for database locked exceptions (sqlite3.OperationalError).",
+        "timestamp": "10m ago"
+    },
+    {
+        "id": "rev-3",
+        "project_id": "p1",
+        "task_id": "T-5",
+        "reviewer_agent_name": "Codex",
+        "status": "approved",
+        "comments": "Visual checked. Spacing is correct on smaller resolutions.",
+        "timestamp": "1h ago"
+    }
+]
+
+
 def seed_database(connection: sqlite3.Connection) -> None:
     cursor = connection.cursor()
     cursor.execute("SELECT COUNT(*) FROM projects")
@@ -1039,6 +1070,19 @@ def seed_database(connection: sqlite3.Connection) -> None:
                 t["id"], t["project_id"], t["title"], t["agent_name"], t["status"],
                 t["priority"], t["progress"], t.get("description"), t.get("related_files"),
                 t.get("expected_output")
+            )
+        )
+
+    # Insert reviews
+    for r in SEED_REVIEWS:
+        cursor.execute(
+            """
+            INSERT INTO reviews (id, project_id, task_id, reviewer_agent_name, status, comments, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                r["id"], r["project_id"], r["task_id"], r["reviewer_agent_name"],
+                r["status"], r["comments"], r["timestamp"]
             )
         )
 

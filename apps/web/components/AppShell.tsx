@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Agent, FileNode, Task, Message, Project } from "../types";
+import { Agent, FileNode, Task, Message, Project, TaskStatus } from "../types";
 import {
   mockFiles,
   mockTasks,
@@ -113,7 +113,7 @@ export const AppShell: React.FC = () => {
 
   // Tabs & panel controls
   const [activeLeftTab, setActiveLeftTab] = useState<"files" | "tasks" | "knowledge">("files");
-  const [activeInspectorTab, setActiveInspectorTab] = useState<"changes" | "logs" | "reviews" | "terminal">("changes");
+  const [activeInspectorTab, setActiveInspectorTab] = useState<"changes" | "logs" | "reviews" | "terminal" | "details">("changes");
 
   // Selection states
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
@@ -478,6 +478,163 @@ export const AppShell: React.FC = () => {
       }
     } catch (err) {
       console.error("Failed to add task to database", err);
+    }
+  };
+
+  // Handle task review submission
+  const handleSubmitReview = async (taskId: string, status: "approved" | "changes_requested", feedback: string) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId,
+          reviewer: "Codex",
+          status,
+          feedback,
+          timestamp
+        })
+      });
+      if (response.ok) {
+        const task = tasks.find(t => t.id === taskId);
+        const taskTitle = task ? task.title : "";
+
+        // Update local tasks state
+        setTasks(prev => prev.map(t => {
+          if (t.id === taskId) {
+            const newReviews = [
+              ...(t.reviewHistory || []),
+              { reviewer: "Codex", status, feedback, timestamp }
+            ];
+            return {
+              ...t,
+              status: status === "approved" ? "completed" : "active",
+              progress: status === "approved" ? 100 : t.progress,
+              reviewHistory: newReviews
+            };
+          }
+          return t;
+        }));
+
+        if (selectedTask?.id === taskId) {
+          setSelectedTask(prev => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              status: status === "approved" ? "completed" : "active",
+              progress: status === "approved" ? 100 : prev.progress,
+              reviewHistory: [
+                ...(prev.reviewHistory || []),
+                { reviewer: "Codex", status, feedback, timestamp }
+              ]
+            };
+          });
+        }
+
+        // Post review message to timeline feed
+        const systemMsg: Message = {
+          id: `M-SYS-REV-${Date.now()}`,
+          sender: "Codex",
+          senderType: "codex",
+          text: status === "approved"
+            ? `Approved task ${taskId}: "${feedback}"`
+            : `Requested revisions for task ${taskId}: "${feedback}"`,
+          timestamp,
+          reviewCard: {
+            taskId,
+            taskTitle,
+            status,
+            feedback
+          }
+        };
+
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: "CX",
+            meta: { reviewCard: systemMsg.reviewCard }
+          })
+        });
+
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[REVIEW] Codex submitted review for task ${taskId} (Status: ${status.toUpperCase()}).`
+        ]);
+        
+        // Contextually switch tab back to reviews so they can inspect history
+        setActiveInspectorTab("reviews");
+      }
+    } catch (err) {
+      console.error("Failed to submit task review", err);
+    }
+  };
+
+  // Handle task status transition (e.g. active to review)
+  const handleSubmitTaskStatus = async (taskId: string, status: string) => {
+    if (!activeProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/tasks/${taskId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      if (response.ok) {
+        setTasks(prev => prev.map(t => {
+          if (t.id === taskId) {
+            return { ...t, status: status as TaskStatus };
+          }
+          return t;
+        }));
+
+        if (selectedTask?.id === taskId) {
+          setSelectedTask(prev => {
+            if (!prev) return null;
+            return { ...prev, status: status as TaskStatus };
+          });
+        }
+
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const systemMsg: Message = {
+          id: `M-SYS-STATUS-${Date.now()}`,
+          sender: "System",
+          senderType: "system",
+          text: `Task ${taskId} status updated to: ${status.toUpperCase()}.`,
+          timestamp
+        };
+
+        await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: systemMsg.id,
+            sender: systemMsg.sender,
+            senderType: systemMsg.senderType,
+            text: systemMsg.text,
+            timestamp: systemMsg.timestamp,
+            avatar: null,
+            meta: null
+          })
+        });
+
+        setMessages(prev => [...prev, systemMsg]);
+        setGeneralLogs(prev => [
+          ...prev,
+          `[STATUS] Task ${taskId} status transitioned to ${status.toUpperCase()}.`
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to update task status", err);
     }
   };
 
@@ -937,6 +1094,8 @@ export const AppShell: React.FC = () => {
             if (fileNode) handleSelectFile(fileNode);
           }}
           onClearTaskSelection={() => setSelectedTask(null)}
+          onSubmitReview={handleSubmitReview}
+          onSubmitTaskStatus={handleSubmitTaskStatus}
           inspectorHeight={inspectorHeight}
           onResize={setInspectorHeight}
           onResizeStart={() => setIsResizing(true)}

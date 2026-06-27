@@ -158,9 +158,72 @@ const getFileAgent = (path: string, taskAgent: string | null): string => {
   return "AntiGravity";
 };
 
+const ReviewActionForm: React.FC<{
+  taskId: string;
+  onSubmitReview: (taskId: string, status: "approved" | "changes_requested", feedback: string) => Promise<void>;
+}> = ({ taskId, onSubmitReview }) => {
+  const [feedback, setFeedback] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleAction = async (status: "approved" | "changes_requested") => {
+    if (!feedback.trim()) {
+      alert("Please enter review feedback comments first.");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await onSubmitReview(taskId, status, feedback);
+      setFeedback("");
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+      <input
+        type="text"
+        placeholder="Enter review feedback..."
+        value={feedback}
+        onChange={(e) => setFeedback(e.target.value)}
+        disabled={isSubmitting}
+        style={{
+          padding: "6px 12px",
+          borderRadius: "4px",
+          border: "1px solid var(--accent-purple)",
+          backgroundColor: "#0f0f15",
+          color: "#ffffff",
+          fontSize: "0.8rem",
+          width: "220px"
+        }}
+      />
+      <button
+        type="button"
+        className="btn"
+        onClick={() => handleAction("approved")}
+        disabled={isSubmitting}
+        style={{ padding: "6px 12px", fontSize: "0.8rem", backgroundColor: "#22c55e", borderColor: "#16a34a", color: "#ffffff", cursor: "pointer", borderRadius: "4px" }}
+      >
+        Approve
+      </button>
+      <button
+        type="button"
+        className="btn"
+        onClick={() => handleAction("changes_requested")}
+        disabled={isSubmitting}
+        style={{ padding: "6px 12px", fontSize: "0.8rem", backgroundColor: "#ef4444", borderColor: "#dc2626", color: "#ffffff", cursor: "pointer", borderRadius: "4px" }}
+      >
+        Request Revision
+      </button>
+    </div>
+  );
+};
+
 interface BottomInspectorProps {
-  activeTab: "changes" | "logs" | "reviews" | "terminal";
-  onTabChange: (tab: "changes" | "logs" | "reviews" | "terminal") => void;
+  activeTab: "changes" | "logs" | "reviews" | "terminal" | "details";
+  onTabChange: (tab: "changes" | "logs" | "reviews" | "terminal" | "details") => void;
   selectedFile: FileNode | null;
   selectedTask: Task | null;
   selectedAgent: Agent | null;
@@ -169,6 +232,8 @@ interface BottomInspectorProps {
   terminalOutput: string[];
   onOpenFileByPath?: (path: string) => void;
   onClearTaskSelection?: () => void;
+  onSubmitReview?: (taskId: string, status: "approved" | "changes_requested", feedback: string) => Promise<void>;
+  onSubmitTaskStatus?: (taskId: string, status: string) => Promise<void>;
   inspectorHeight: number;
   onResize: (height: number) => void;
   onResizeStart?: () => void;
@@ -186,6 +251,8 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
   terminalOutput,
   onOpenFileByPath,
   onClearTaskSelection,
+  onSubmitReview,
+  onSubmitTaskStatus,
   inspectorHeight,
   onResize,
   onResizeStart,
@@ -337,6 +404,26 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
         >
           Terminal
         </button>
+        {selectedTask && (
+          <button
+            className={`inspector-tab-btn ${activeTab === "details" ? "active" : ""}`}
+            onClick={() => onTabChange("details")}
+            role="tab"
+            aria-selected={activeTab === "details"}
+          >
+            Task Info ({selectedTask.id})
+          </button>
+        )}
+        {selectedAgent && (
+          <button
+            className={`inspector-tab-btn ${activeTab === "details" ? "active" : ""}`}
+            onClick={() => onTabChange("details")}
+            role="tab"
+            aria-selected={activeTab === "details"}
+          >
+            Agent Info ({selectedAgent.name})
+          </button>
+        )}
       </div>
 
       {/* Content pane */}
@@ -550,6 +637,186 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
                 <span className="terminal-cursor" />
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Details Tab */}
+        {activeTab === "details" && (
+          <div className="inspector-panel-view details-view scrollable-console">
+            {selectedTask && (
+              <div className="task-details-view" style={{ padding: "8px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span className="task-details-id" style={{ fontSize: "1.1rem", fontWeight: "bold", color: "var(--accent-orange)" }}>{selectedTask.id}</span>
+                      <span className={`task-badge status-${selectedTask.status}`} style={{ fontSize: "0.75rem", padding: "2px 8px" }}>
+                        {selectedTask.status.toUpperCase()}
+                      </span>
+                      <span className={`badge-priority ${selectedTask.priority}`} style={{ fontSize: "0.7rem", padding: "2px 6px" }}>
+                        {selectedTask.priority.toUpperCase()}
+                      </span>
+                    </div>
+                    <h3 style={{ margin: "4px 0", color: "#ffffff" }}>{selectedTask.title}</h3>
+                  </div>
+
+                  <div className="task-details-actions" style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                    {/* Render action buttons based on task status */}
+                    {selectedTask.status === "active" && onSubmitTaskStatus && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => onSubmitTaskStatus(selectedTask.id, "review")}
+                        style={{ padding: "6px 12px", fontSize: "0.8rem", backgroundColor: "var(--accent-orange)", border: "1px solid var(--accent-orange)", color: "#ffffff", borderRadius: "4px", cursor: "pointer" }}
+                      >
+                        Submit for Review
+                      </button>
+                    )}
+                    
+                    {selectedTask.status === "review" && onSubmitReview && (
+                      <ReviewActionForm taskId={selectedTask.id} onSubmitReview={onSubmitReview} />
+                    )}
+                  </div>
+                </div>
+
+                <div className="details-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+                  <div>
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Description</h4>
+                      <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", margin: 0, lineHeight: 1.4 }}>{selectedTask.description || "No description provided."}</p>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Expected Output</h4>
+                      <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", margin: 0, lineHeight: 1.4 }}>{selectedTask.expectedOutput || "No expected output defined."}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Assigned Agent</h4>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <div className="mini-avatar" style={{ width: "24px", height: "24px", fontSize: "0.75rem" }}>
+                          {selectedTask.agentName.substring(0, 2).toUpperCase()}
+                        </div>
+                        <span style={{ color: "#ffffff", fontSize: "0.85rem" }}>@{selectedTask.agentName}</span>
+                      </div>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Progress</h4>
+                      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <div className="mini-progress-bar" style={{ flex: 1, height: "6px", backgroundColor: "#1e1e2f" }}>
+                          <div className="progress-fill" style={{ width: `${selectedTask.progress}%`, height: "100%", backgroundColor: "var(--accent-orange)" }} />
+                        </div>
+                        <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{selectedTask.progress}%</span>
+                      </div>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Related Files</h4>
+                      {selectedTask.relatedFiles.length === 0 ? (
+                        <p style={{ color: "var(--text-muted)", fontSize: "0.8rem", margin: 0 }}>No files linked to this task.</p>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                          {selectedTask.relatedFiles.map((file) => (
+                            <button
+                              key={file}
+                              type="button"
+                              onClick={() => onOpenFileByPath && onOpenFileByPath(file)}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                padding: 0,
+                                color: "var(--accent-purple)",
+                                fontSize: "0.8rem",
+                                textAlign: "left",
+                                cursor: "pointer",
+                                textDecoration: "underline",
+                                width: "fit-content"
+                              }}
+                            >
+                              {file}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {selectedAgent && (
+              <div className="agent-details-view" style={{ padding: "8px 16px" }}>
+                <div style={{ display: "flex", gap: "16px", alignItems: "center", marginBottom: "16px" }}>
+                  <div className={`agent-avatar ${selectedAgent.name.toLowerCase()}`} style={{ width: "40px", height: "40px", fontSize: "1.2rem" }}>
+                    {selectedAgent.avatar}
+                  </div>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <h3 style={{ margin: 0, color: "#ffffff" }}>{selectedAgent.name}</h3>
+                      <span className={`status-dot ${selectedAgent.isEnabled !== false ? (selectedAgent.status === "online" ? "green" : selectedAgent.status === "working" ? "orange" : selectedAgent.status === "blocked" ? "yellow" : "gray") : "gray"}`} />
+                      <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>({selectedAgent.isEnabled !== false ? selectedAgent.status : "disabled"})</span>
+                    </div>
+                    <span style={{ color: "var(--accent-purple)", fontSize: "0.85rem", fontWeight: 500 }}>{selectedAgent.role}</span>
+                  </div>
+                </div>
+
+                <div className="details-grid" style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "20px" }}>
+                  <div>
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "4px" }}>Description</h4>
+                      <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", margin: 0, lineHeight: 1.4 }}>{selectedAgent.description || "No description available for this agent adapter registry profile."}</p>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "12px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "6px" }}>Capabilities & Specialized Skills</h4>
+                      {selectedAgent.capabilities && selectedAgent.capabilities.length > 0 ? (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                          {selectedAgent.capabilities.map((cap) => (
+                            <span
+                              key={cap}
+                              className="agent-card-cap-badge"
+                              style={{
+                                fontSize: "0.7rem",
+                                padding: "4px 8px",
+                                backgroundColor: "#161622",
+                                border: "1px solid #2e2a47",
+                                borderRadius: "4px",
+                                color: "var(--text-secondary)"
+                              }}
+                            >
+                              {cap}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ color: "var(--text-muted)", fontSize: "0.8rem", margin: 0 }}>No specific capabilities registered.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="detail-section" style={{ marginBottom: "10px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "2px" }}>Intelligence Rating</h4>
+                      <span style={{ color: "#ffffff", fontSize: "0.85rem", fontWeight: 600 }}>{selectedAgent.intelligenceLevel || "High"}</span>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "10px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "2px" }}>Adapter Binding Type</h4>
+                      <span style={{ color: "#ffffff", fontSize: "0.85rem" }}>{selectedAgent.adapterType || "Mock"}</span>
+                    </div>
+
+                    <div className="detail-section" style={{ marginBottom: "10px" }}>
+                      <h4 style={{ color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase", marginBottom: "2px" }}>Launch Subprocess Command</h4>
+                      <code style={{ display: "block", padding: "4px 8px", backgroundColor: "#0f0f15", borderRadius: "4px", fontSize: "0.75rem", color: "var(--text-secondary)", border: "1px solid #1e1e2f" }}>
+                        {selectedAgent.launchCommand || "N/A (Built-in)"}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
