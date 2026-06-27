@@ -4,18 +4,35 @@ import json
 import time
 from datetime import datetime
 from typing import AsyncIterator, Optional
+import asyncio
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.app.database import database_is_ready, initialize_database, get_db_connection
+from backend.app.agents.manager import agent_manager
+
+
+async def run_agent_simulation_loop():
+    while True:
+        try:
+            agent_manager.tick()
+        except Exception as e:
+            print("Error in simulation loop:", e)
+        await asyncio.sleep(2)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     initialize_database()
+    task = asyncio.create_task(run_agent_simulation_loop())
     yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -629,6 +646,50 @@ async def update_agent(project_id: str, agent_name: str, body: AgentUpdate):
         conn.close()
 
 
+def generate_codex_response(project_id: str, text: str) -> dict:
+    lower_text = text.lower()
+
+    # Check if user tries to direct-command worker agents in V1
+    workers = ["@antigravity", "@opencode", "@blackbox", "@kilocode", "@mimocode", "@mimo"]
+    mentioned_workers = [w for w in workers if w in lower_text]
+
+    if mentioned_workers:
+        display_names = []
+        for mw in mentioned_workers:
+            if mw == "@antigravity": display_names.append("AntiGravity")
+            elif mw == "@opencode": display_names.append("OpenCode")
+            elif mw == "@blackbox": display_names.append("Blackbox")
+            elif mw == "@kilocode": display_names.append("Kilocode")
+            elif mw in ["@mimocode", "@mimo"]: display_names.append("Mimo Code")
+
+        display_names_str = ", ".join(display_names)
+        codex_reply = f"In V1, direct communication with worker agents (like {display_names_str}) is disabled to maintain centralized control. Please tell me what you need, and I will handle task assignments and coordination with the team."
+    elif any(k in lower_text for k in ["task", "create", "new"]):
+        codex_reply = "I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter."
+    elif any(k in lower_text for k in ["status", "progress", "agents"]):
+        codex_reply = "Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues."
+    elif any(k in lower_text for k in ["help", "commands", "how"]):
+        codex_reply = "I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below."
+    elif any(k in lower_text for k in ["backend", "database"]):
+        codex_reply = "The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next."
+    else:
+        codex_reply = "Understood. I will parse your instruction in the context of the current project branch. Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace."
+
+    timestamp = datetime.now().strftime("%I:%M %p")
+    if timestamp.startswith("0"):
+        timestamp = timestamp[1:]
+
+    return {
+        "id": f"M-CODEX-{int(time.time() * 1000)}",
+        "sender": "Codex",
+        "senderType": "codex",
+        "text": codex_reply,
+        "timestamp": timestamp,
+        "avatar": "CX",
+        "meta": None
+    }
+
+
 @app.delete("/api/projects/{project_id}/agents/{agent_name}")
 async def delete_agent(project_id: str, agent_name: str):
     if agent_name == "Codex":
@@ -648,6 +709,8 @@ async def create_message(project_id: str, body: MessageCreate):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+
+        # Insert incoming message
         cursor.execute(
             """
             INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
@@ -658,8 +721,41 @@ async def create_message(project_id: str, body: MessageCreate):
                 body.timestamp, body.avatar, json.dumps(body.meta) if body.meta is not None else None
             )
         )
+
+        user_message_dict = {
+            "id": body.id,
+            "sender": body.sender,
+            "senderType": body.senderType,
+            "text": body.text,
+            "timestamp": body.timestamp,
+            "avatar": body.avatar,
+            "meta": body.meta
+        }
+
+        codex_message_dict = None
+
+        # If it's a user message, generate and save Codex response atomically
+        if body.senderType == "user":
+            codex_message_dict = generate_codex_response(project_id, body.text)
+            cursor.execute(
+                """
+                INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    codex_message_dict["id"], project_id, codex_message_dict["sender"],
+                    codex_message_dict["senderType"], codex_message_dict["text"],
+                    codex_message_dict["timestamp"], codex_message_dict["avatar"],
+                    json.dumps(codex_message_dict["meta"]) if codex_message_dict["meta"] is not None else None
+                )
+            )
+
         conn.commit()
-        return {"status": "success"}
+        return {
+            "status": "success",
+            "userMessage": user_message_dict,
+            "codexMessage": codex_message_dict
+        }
     finally:
         conn.close()
 

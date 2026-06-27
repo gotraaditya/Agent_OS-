@@ -111,6 +111,8 @@ export const AppShell: React.FC = () => {
     }
   }, [activeProjectId]);
 
+
+
   // Tabs & panel controls
   const [activeLeftTab, setActiveLeftTab] = useState<"files" | "tasks" | "knowledge">("files");
   const [activeInspectorTab, setActiveInspectorTab] = useState<"changes" | "logs" | "reviews" | "terminal" | "details">("changes");
@@ -139,6 +141,65 @@ export const AppShell: React.FC = () => {
     { id: "timeline", title: "# ai-team-manager-dev", type: "timeline" }
   ]);
   const [activeCenterTabId, setActiveCenterTabId] = useState<string>("timeline");
+
+  // Poll project data from backend database every 3 seconds to get live status, progress, logs and review history updates
+  useEffect(() => {
+    if (!activeProjectId) return;
+
+    let isSubscribed = true;
+
+    const pollProject = async () => {
+      try {
+        const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+        const response = await fetch(`${backendUrl}/api/projects`);
+        if (response.ok && isSubscribed) {
+          const data: Project[] = await response.json();
+          setProjects(data);
+
+          const currentProj = data.find(p => p.id === activeProjectId);
+          if (currentProj) {
+            setTasks(currentProj.tasks);
+            setAgents(currentProj.agents);
+            setMessages(currentProj.messages);
+
+            // Dynamically refresh selection states
+            if (selectedTask) {
+              const updatedTask = currentProj.tasks.find(t => t.id === selectedTask.id);
+              if (updatedTask) {
+                if (
+                  updatedTask.status !== selectedTask.status ||
+                  updatedTask.progress !== selectedTask.progress ||
+                  JSON.stringify(updatedTask.reviewHistory) !== JSON.stringify(selectedTask.reviewHistory)
+                ) {
+                  setSelectedTask(updatedTask);
+                }
+              }
+            }
+            if (selectedAgent) {
+              const updatedAgent = currentProj.agents.find(a => a.name === selectedAgent.name);
+              if (updatedAgent) {
+                if (
+                  updatedAgent.status !== selectedAgent.status ||
+                  updatedAgent.progress !== selectedAgent.progress ||
+                  updatedAgent.logs.length !== selectedAgent.logs.length
+                ) {
+                  setSelectedAgent(updatedAgent);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error polling project updates", err);
+      }
+    };
+
+    const intervalId = setInterval(pollProject, 3000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(intervalId);
+    };
+  }, [activeProjectId, selectedTask, selectedAgent]);
 
   // Mock data states
   const [tasks, setTasks] = useState<Task[]>(mockTasks);
@@ -848,85 +909,58 @@ export const AppShell: React.FC = () => {
     }
   };
 
-  // Send message to Codex simulator
+  // Focus chat input composer and switch center tab
+  const handleAskCodex = () => {
+    setActiveCenterTabId("timeline");
+    setTimeout(() => {
+      chatInputRef.current?.focus();
+    }, 50);
+  };
+
+  // Send message to Codex simulator/router
   const handleSendMessage = async (text: string) => {
     if (!activeProjectId) return;
     try {
       const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
       const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const userMsg: Message = {
-        id: `M-USER-${Date.now()}`,
-        sender: "Aditya Gotra",
-        senderType: "user",
-        text,
-        timestamp,
-        avatar: "AG"
-      };
+      const userMsgId = `M-USER-${Date.now()}`;
 
-      // Save user message to database
+      // Save user message and get Codex response from backend
       const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: userMsg.id,
-          sender: userMsg.sender,
-          senderType: userMsg.senderType,
-          text: userMsg.text,
-          timestamp: userMsg.timestamp,
-          avatar: userMsg.avatar,
+          id: userMsgId,
+          sender: "Aditya Gotra",
+          senderType: "user",
+          text,
+          timestamp,
+          avatar: "AG",
           meta: null
         })
       });
 
       if (response.ok) {
-        setMessages(prev => [...prev, userMsg]);
-        setGeneralLogs(prev => [...prev, `[CHAT] User: "${text}"`]);
+        const data = await response.json();
+        const userMsg: Message = data.userMessage;
+        const codexMsg: Message | null = data.codexMessage;
 
-        // Simulate Codex response after 1 second
-        setTimeout(async () => {
-          const codexTimestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          let codexReply = "";
-
-          const lowerText = text.toLowerCase();
-          if (lowerText.includes("task") || lowerText.includes("create") || lowerText.includes("new")) {
-            codexReply = "I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter.";
-          } else if (lowerText.includes("status") || lowerText.includes("progress") || lowerText.includes("agents")) {
-            codexReply = "Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues.";
-          } else if (lowerText.includes("help") || lowerText.includes("commands") || lowerText.includes("how")) {
-            codexReply = "I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below.";
-          } else if (lowerText.includes("backend") || lowerText.includes("database")) {
-            codexReply = "The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next.";
-          } else {
-            codexReply = `Understood. I will parse your instruction in the context of the current project branch (Ui). Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace.`;
+        // Append user message and Codex reply locally
+        setMessages(prev => {
+          const list = [...prev, userMsg];
+          if (codexMsg) {
+            list.push(codexMsg);
           }
+          return list;
+        });
 
-          const codexMsg: Message = {
-            id: `M-CODEX-${Date.now()}`,
-            sender: "Codex",
-            senderType: "codex",
-            text: codexReply,
-            timestamp: codexTimestamp,
-            avatar: "CX"
-          };
-
-          // Save Codex message to database
-          await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id: codexMsg.id,
-              sender: codexMsg.sender,
-              senderType: codexMsg.senderType,
-              text: codexMsg.text,
-              timestamp: codexMsg.timestamp,
-              avatar: codexMsg.avatar,
-              meta: null
-            })
-          });
-
-          setMessages(prev => [...prev, codexMsg]);
-          setGeneralLogs(prev => [...prev, `[CHAT] Codex: "${codexReply}"`]);
-        }, 1000);
+        setGeneralLogs(prev => {
+          const logs = [...prev, `[CHAT] User: "${text}"`];
+          if (codexMsg) {
+            logs.push(`[CHAT] Codex: "${codexMsg.text}"`);
+          }
+          return logs;
+        });
       }
     } catch (err) {
       console.error("Failed to send message to database", err);
@@ -948,6 +982,7 @@ export const AppShell: React.FC = () => {
         currentBranch={activeProject ? activeProject.branch : "N/A"}
         onOpenNewTask={() => setIsNewTaskModalOpen(true)}
         onFocusSearch={() => {}}
+        onAskCodex={handleAskCodex}
         activeTasksCount={activeProject ? tasks.filter(t => t.status === "active").length : 0}
         isInspectorOpen={isInspectorOpen && !!activeProject}
         onToggleInspector={() => setIsInspectorOpen(!isInspectorOpen)}

@@ -7,7 +7,7 @@ def initialize_database() -> None:
     """Create the local database, schema tables, and seed initial mock data."""
     DATABASE_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(DATABASE_PATH) as connection:
+    with sqlite3.connect(DATABASE_PATH, timeout=30.0) as connection:
         connection.execute("PRAGMA foreign_keys = ON;")
         
         # Schema metadata
@@ -147,7 +147,7 @@ def database_is_ready() -> bool:
 
 
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = sqlite3.connect(DATABASE_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn

@@ -797,6 +797,8 @@ html, body {
 .task-card-badge.status-completed { background-color: rgba(16, 185, 129, 0.15); color: var(--accent-green); }
 .task-card-badge.status-review    { background-color: rgba(234, 179, 8, 0.15); color: var(--accent-yellow); }
 .task-card-badge.status-active    { background-color: rgba(249, 115, 22, 0.15); color: var(--accent-orange); }
+.task-card-badge.status-assigned  { background-color: rgba(59, 130, 246, 0.15); color: var(--accent-blue); }
+.task-card-badge.status-working   { background-color: rgba(249, 115, 22, 0.15); color: var(--accent-orange); }
 .task-card-badge.status-blocked   { background-color: rgba(239, 68, 68, 0.15); color: var(--accent-red); }
 
 .task-card-id {
@@ -1387,6 +1389,8 @@ html, body {
 .task-badge.status-completed { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid #10b981; }
 .task-badge.status-review    { background: rgba(234, 179, 8, 0.15); color: var(--accent-yellow); border: 1px solid #eab308; }
 .task-badge.status-active    { background: rgba(249, 115, 22, 0.15); color: var(--accent-orange); border: 1px solid #f97316; }
+.task-badge.status-assigned  { background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); border: 1px solid #3b82f6; }
+.task-badge.status-working   { background: rgba(249, 115, 22, 0.15); color: var(--accent-orange); border: 1px solid #f97316; }
 .task-badge.status-blocked   { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); border: 1px solid #ef4444; }
 
 /* Logs View console look */

@@ -16,7 +16,7 @@ export interface Agent {
   isEnabled?: boolean;
 }
 
-export type TaskStatus = "active" | "review" | "completed" | "blocked";
+export type TaskStatus = "assigned" | "working" | "active" | "review" | "completed" | "blocked";
 export type TaskPriority = "low" | "medium" | "high" | "critical";
 
 export interface Task {

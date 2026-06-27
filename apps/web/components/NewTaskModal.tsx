@@ -30,7 +30,7 @@ export const NewTaskModal: React.FC<NewTaskModalProps> = ({
       id: `T-${Math.floor(Math.random() * 900) + 100}`,
       title,
       agentName,
-      status: "active",
+      status: "assigned",
       priority,
       progress: 0,
       description,

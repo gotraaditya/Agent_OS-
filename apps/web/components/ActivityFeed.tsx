@@ -57,6 +57,10 @@ export const ActivityFeed: React.FC<ActivityFeedProps> = ({
         return "task-card-badge status-review";
       case "blocked":
         return "task-card-badge status-blocked";
+      case "assigned":
+        return "task-card-badge status-assigned";
+      case "working":
+        return "task-card-badge status-working";
       default:
         return "task-card-badge status-active";
     }

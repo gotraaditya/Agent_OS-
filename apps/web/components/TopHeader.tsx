@@ -5,6 +5,7 @@ interface TopHeaderProps {
   currentBranch: string;
   onOpenNewTask: () => void;
   onFocusSearch: () => void;
+  onAskCodex: () => void;
   activeTasksCount: number;
   isInspectorOpen: boolean;
   onToggleInspector: () => void;
@@ -20,6 +21,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   currentBranch,
   onOpenNewTask,
   onFocusSearch,
+  onAskCodex,
   activeTasksCount,
   isInspectorOpen,
   onToggleInspector,
@@ -277,6 +279,13 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               <path d="M2 14h20" />
             </svg>
             {isInspectorOpen ? "Hide Inspector" : "Show Inspector"}
+          </button>
+
+          <button className="btn-codex-shortcut" onClick={onAskCodex} style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "4px", border: "1px solid #581c87" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="btn-icon">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            Ask Codex
           </button>
 
           <button className="btn-new-task" onClick={onOpenNewTask}>

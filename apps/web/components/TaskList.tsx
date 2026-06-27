@@ -13,6 +13,8 @@ export const TaskList: React.FC<TaskListProps> = ({
   onSelectTask
 }) => {
   const groups: { label: string; status: TaskStatus; accentClass: string }[] = [
+    { label: "Assigned", status: "assigned", accentClass: "accent-blue" },
+    { label: "Working", status: "working", accentClass: "accent-orange" },
     { label: "Active", status: "active", accentClass: "accent-orange" },
     { label: "In Review", status: "review", accentClass: "accent-yellow" },
     { label: "Completed", status: "completed", accentClass: "accent-green" },
