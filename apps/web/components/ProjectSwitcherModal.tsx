@@ -88,15 +88,40 @@ export const ProjectSwitcherModal: React.FC<ProjectSwitcherModalProps> = ({
 
               <div className="form-group">
                 <label htmlFor="proj-path">Local Directory Path</label>
-                <input
-                  id="proj-path"
-                  type="text"
-                  className="modal-input font-mono"
-                  placeholder="e.g., C:\projects\townsim"
-                  value={newProjectPath}
-                  onChange={(e) => setNewProjectPath(e.target.value)}
-                  required
-                />
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <input
+                    id="proj-path"
+                    type="text"
+                    className="modal-input font-mono"
+                    placeholder="e.g., C:\projects\townsim"
+                    value={newProjectPath}
+                    onChange={(e) => setNewProjectPath(e.target.value)}
+                    required
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="btn-modal-browse"
+                    onClick={async () => {
+                      const desktop = (window as any).desktop;
+                      if (desktop?.openFolderDialog) {
+                        const selectedPath = await desktop.openFolderDialog();
+                        if (selectedPath) {
+                          setNewProjectPath(selectedPath);
+                          // Auto-fill project name from folder name if empty
+                          if (!newProjectName.trim()) {
+                            const folderName = selectedPath.split(/[\\/]/).filter(Boolean).pop() || "";
+                            setNewProjectName(folderName);
+                          }
+                        }
+                      } else {
+                        alert("Folder picker is only available in the desktop app.");
+                      }
+                    }}
+                  >
+                    Browse...
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">

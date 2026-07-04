@@ -13,9 +13,16 @@
     "dev:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-backend.ps1",
     "dev:web": "npm run dev --workspace @ai-team-manager/web",
     "dev:desktop": "wait-on http://127.0.0.1:3000 http://127.0.0.1:8000/api/health && npm run dev --workspace @ai-team-manager/desktop",
+    "start": "concurrently --kill-others --names BACKEND,WEB,DESKTOP --prefix-colors blue,green,magenta \"npm:start:backend\" \"npm:start:web\" \"npm:start:desktop\"",
+    "start:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-backend-prod.ps1",
+    "start:web": "npm run start --workspace @ai-team-manager/web",
+    "start:desktop": "wait-on http://127.0.0.1:3000 http://127.0.0.1:8000/api/health && npm run dev --workspace @ai-team-manager/desktop",
     "build": "npm run build --workspace @ai-team-manager/web",
     "typecheck": "npm run typecheck --workspace @ai-team-manager/web",
-    "check:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-backend.ps1"
+    "check:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-backend.ps1",
+    "test": "npm run test:backend && npm run test:web",
+    "test:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-backend.ps1",
+    "test:web": "npm run test --workspace @ai-team-manager/web"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

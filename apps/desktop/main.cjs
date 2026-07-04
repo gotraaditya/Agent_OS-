@@ -1,7 +1,23 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog } = require("electron");
 const path = require("node:path");
 
 const DEVELOPMENT_URL = "http://127.0.0.1:3000";
+
+// --- IPC Handlers ---
+// Native folder picker dialog — called from renderer via preload bridge
+ipcMain.handle("dialog:openFolder", async () => {
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  const result = await dialog.showOpenDialog(focusedWindow, {
+    properties: ["openDirectory"],
+    title: "Select Project Folder"
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
 
 function createMainWindow() {
   const window = new BrowserWindow({
@@ -16,7 +32,7 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: false // Required for IPC invoke to work through preload
     }
   });
 
@@ -50,4 +66,3 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
-

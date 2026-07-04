@@ -73,10 +73,11 @@ MAX_FILE_READ_BYTES = 1_000_000
 
 def resolve_existing_path(path: str) -> str:
     """Resolve a user-provided local path without following unknown frontend assumptions."""
-    normalized_path = os.path.abspath(os.path.expanduser(path))
+    normalized_path = os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
     if not os.path.exists(normalized_path):
         raise ValueError(f"Path does not exist: {path}")
     return normalized_path
+
 
 
 def ensure_path_inside_root(path: str, root: str) -> str:
@@ -814,6 +815,56 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
     else:
         if use_cli:
             codex_reply = res["response"]
+            # Auto-route design stubs to a real Mimo Code task card
+            if "Routing instruction to the design workspace" in codex_reply:
+                cursor.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
+                task_rows = cursor.fetchall()
+                max_num = 0
+                for r in task_rows:
+                    id_str = r["id"]
+                    if id_str.startswith("T-"):
+                        try:
+                            num = int(id_str[2:])
+                            if num > max_num:
+                                max_num = num
+                        except ValueError:
+                            pass
+
+                new_task_num = max_num + 1
+                new_task_id = f"T-{new_task_num}"
+                title = f"Design workspace rules for '{text}'"
+                if len(title) > 60:
+                    title = title[:57] + "..."
+
+                cursor.execute(
+                    """
+                    INSERT INTO tasks (id, project_id, title, agent_name, status, priority, progress, description, related_files, expected_output)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_task_id, project_id, title, "Mimo Code", "assigned", "medium", 0,
+                        f"Auto-routed design instruction from user prompt: '{text}'",
+                        json.dumps(["/src/components/Navbar.tsx"]),
+                        "Updated layout guidelines and spacing guidelines."
+                    )
+                )
+
+                # Insert timeline system notification for task creation
+                timeline_msg_id = f"M-SYS-TASK-ADD-{int(time.time() * 1000)}"
+                sys_time = datetime.now().strftime("%I:%M %p")
+                if sys_time.startswith("0"): sys_time = sys_time[1:]
+
+                cursor.execute(
+                    """
+                    INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        timeline_msg_id, project_id, "System", "system",
+                        f"Task {new_task_id} ('{title}') was created and assigned to @Mimo Code.",
+                        sys_time, None, None
+                    )
+                )
         else:
             codex_reply = "[CLI Fallback] Understood. I will parse your instruction in the context of the current project branch. Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace."
 
