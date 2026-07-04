@@ -15,6 +15,7 @@ interface TopHeaderProps {
   onOpenCreateProject: () => void;
   onSelectBranch: (branch: string) => void;
   onOpenSettings?: () => void;
+  onCloseProject?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -31,7 +32,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onOpenProjectSwitcher,
   onOpenCreateProject,
   onSelectBranch,
-  onOpenSettings
+  onOpenSettings,
+  onCloseProject
 }) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
@@ -163,6 +165,22 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
                 </svg>
                 <span>Create New Project...</span>
               </div>
+
+              {projectName !== "No Project" && onCloseProject && (
+                <div
+                  className="dropdown-item action clickable"
+                  onClick={() => {
+                    onCloseProject();
+                    setIsDropdownOpen(false);
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="dropdown-action-icon">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                  <span>Close Workspace</span>
+                </div>
+              )}
 
               <div
                 className="dropdown-item action clickable"

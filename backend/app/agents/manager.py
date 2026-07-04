@@ -215,81 +215,75 @@ class AgentManager:
             cursor.execute("SELECT * FROM tasks WHERE status = 'review'")
             review_tasks = cursor.fetchall()
 
-            import random
-            for task in review_tasks:
+            for idx, task in enumerate(review_tasks):
                 t_id = task["id"]
                 p_id = task["project_id"]
-                agent_name = task["agent_name"]
                 title = task["title"]
 
-                # Check if a review already exists for this task
-                cursor.execute("SELECT COUNT(*) FROM reviews WHERE project_id = ? AND task_id = ?", (p_id, t_id))
+                cursor.execute(
+                    "SELECT COUNT(*) FROM reviews WHERE project_id = ? AND task_id = ?",
+                    (p_id, t_id)
+                )
                 has_review = cursor.fetchone()[0] > 0
+                if has_review:
+                    continue
 
-                if not has_review:
-                    # Decide Approved (80% probability) vs Revision Requested (20% probability)
-                    decision = "approved" if random.random() < 0.8 else "changes_requested"
+                feedback = (
+                    f"Verification check passed. The implementation of task {t_id} "
+                    "meets V1 workflow requirements and is ready to mark complete."
+                )
+                timestamp = datetime.now().strftime("%I:%M %p")
+                if timestamp.startswith("0"):
+                    timestamp = timestamp[1:]
 
-                    if decision == "approved":
-                        feedback = f"Verification check passed. The implementation of task {t_id} meets architectural standards. Test suites passed successfully with zero compile warnings."
-                        new_status = "completed"
-                        progress = 100
-                    else:
-                        feedback = f"Revisions requested for {t_id}. The code compiles, but please refactor the implementation to add complete error handling boundaries and check constraints."
-                        new_status = "active"
-                        progress = 50
+                unique_suffix = f"{int(time.time() * 1000)}-{idx}"
+                rev_id = f"rev-{unique_suffix}"
+                cursor.execute(
+                    """
+                    INSERT INTO reviews (id, project_id, task_id, reviewer_agent_name, status, comments, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (rev_id, p_id, t_id, "Codex", "approved", feedback, timestamp)
+                )
 
-                    # Create review record
-                    rev_id = f"rev-{int(time.time() * 1000)}"
-                    timestamp = datetime.now().strftime("%I:%M %p")
-                    if timestamp.startswith("0"): timestamp = timestamp[1:]
+                cursor.execute(
+                    "UPDATE tasks SET status = ?, progress = ? WHERE project_id = ? AND id = ?",
+                    ("completed", 100, p_id, t_id)
+                )
 
-                    cursor.execute(
-                        """
-                        INSERT INTO reviews (id, project_id, task_id, reviewer_agent_name, status, comments, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (rev_id, p_id, t_id, "Codex", decision, feedback, timestamp)
+                timeline_msg_id = f"M-SYS-REV-DEC-{unique_suffix}"
+                cursor.execute(
+                    """
+                    INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        timeline_msg_id, p_id, "System", "system",
+                        f"Task {t_id} review complete: APPROVED by Codex.",
+                        timestamp, None, None
                     )
+                )
 
-                    # Update task status and progress
-                    cursor.execute(
-                        "UPDATE tasks SET status = ?, progress = ? WHERE project_id = ? AND id = ?",
-                        (new_status, progress, p_id, t_id)
-                    )
-
-                    # Create timeline system message
-                    timeline_msg_id = f"M-SYS-REV-DEC-{int(time.time() * 1000)}"
-                    timeline_text = f"Task {t_id} review complete: {decision.upper()} by Codex."
-                    cursor.execute(
-                        """
-                        INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (timeline_msg_id, p_id, "System", "system", timeline_text, timestamp, None, None)
-                    )
-
-                    # Create Codex review message with reviewCard meta
-                    codex_msg_id = f"M-CODEX-REV-{int(time.time() * 1000)}"
-                    codex_text = f"Approved task {t_id}: \"{feedback}\"" if decision == "approved" else f"Requested revisions for task {t_id}: \"{feedback}\""
-                    review_card_meta = {
-                        "reviewCard": {
-                            "taskId": t_id,
-                            "taskTitle": title,
-                            "status": decision,
-                            "feedback": feedback
-                        }
+                codex_msg_id = f"M-CODEX-REV-{unique_suffix}"
+                review_card_meta = {
+                    "reviewCard": {
+                        "taskId": t_id,
+                        "taskTitle": title,
+                        "status": "approved",
+                        "feedback": feedback
                     }
-                    cursor.execute(
-                        """
-                        INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            codex_msg_id, p_id, "Codex", "codex", codex_text,
-                            timestamp, "CX", json.dumps(review_card_meta)
-                        )
+                }
+                cursor.execute(
+                    """
+                    INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        codex_msg_id, p_id, "Codex", "codex",
+                        f"Approved task {t_id}: \"{feedback}\"",
+                        timestamp, "CX", json.dumps(review_card_meta)
                     )
+                )
 
             conn.commit()
         except Exception as e:

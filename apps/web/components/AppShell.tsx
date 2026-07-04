@@ -59,37 +59,44 @@ export const AppShell: React.FC = () => {
           const data: Project[] = await response.json();
           setProjects(data);
 
-          let savedActiveId = localStorage.getItem("ai_team_active_project_id");
-          if (!savedActiveId || !data.some(p => p.id === savedActiveId)) {
-            savedActiveId = data[0]?.id || null;
-          }
+          const workspaceWasClosed = localStorage.getItem("ai_team_workspace_closed") === "true";
+          const savedActiveId = localStorage.getItem("ai_team_active_project_id");
+          const activeProj = workspaceWasClosed
+            ? null
+            : data.find(p => p.id === savedActiveId) || data[0] || null;
 
-          if (savedActiveId) {
-            const activeProj = data.find(p => p.id === savedActiveId);
-            if (activeProj) {
-              setActiveProjectId(savedActiveId);
-              setTasks(activeProj.tasks);
-              setAgents(activeProj.agents);
-              setMessages(activeProj.messages);
-              setSelectedTask(activeProj.tasks.find(t => t.status === "active") || null);
-              setSelectedAgent(activeProj.agents[0] || null);
+          if (activeProj) {
+            setActiveProjectId(activeProj.id);
+            setTasks(activeProj.tasks);
+            setAgents(activeProj.agents);
+            setMessages(activeProj.messages);
+            setSelectedTask(activeProj.tasks.find(t => t.status === "active") || null);
+            setSelectedAgent(activeProj.agents[0] || null);
+            setSelectedFile(null);
+            setSelectedKnowledgeName(null);
+            const timelineTitle = `# ${activeProj.name.toLowerCase().replace(/\s+/g, "-")}-dev`;
+            setCenterTabs([
+              { id: "timeline", title: timelineTitle, type: "timeline" }
+            ]);
+            setActiveCenterTabId("timeline");
 
-              if (activeProj.localPath) {
-                try {
-                  const scanRes = await fetch(`${backendUrl}/api/workspace/scan?path=${encodeURIComponent(activeProj.localPath)}`);
-                  if (scanRes.ok) {
-                    const fileTree = await scanRes.json();
-                    setCurrentFiles(fileTree);
-                  } else {
-                    setCurrentFiles(activeProj.files || mockFiles);
-                  }
-                } catch {
+            if (activeProj.localPath) {
+              try {
+                const scanRes = await fetch(`${backendUrl}/api/workspace/scan?path=${encodeURIComponent(activeProj.localPath)}`);
+                if (scanRes.ok) {
+                  const fileTree = await scanRes.json();
+                  setCurrentFiles(fileTree);
+                } else {
                   setCurrentFiles(activeProj.files || mockFiles);
                 }
-              } else {
+              } catch {
                 setCurrentFiles(activeProj.files || mockFiles);
               }
+            } else {
+              setCurrentFiles(activeProj.files || mockFiles);
             }
+          } else {
+            setActiveProjectId(null);
           }
         } else {
           setIsBackendConnected(false);
@@ -106,14 +113,17 @@ export const AppShell: React.FC = () => {
 
   // Save active project selection changes
   useEffect(() => {
+    if (isLoading) return;
     if (typeof window !== "undefined") {
       if (activeProjectId) {
         localStorage.setItem("ai_team_active_project_id", activeProjectId);
+        localStorage.removeItem("ai_team_workspace_closed");
       } else {
         localStorage.removeItem("ai_team_active_project_id");
+        localStorage.setItem("ai_team_workspace_closed", "true");
       }
     }
-  }, [activeProjectId]);
+  }, [activeProjectId, isLoading]);
 
 
 
@@ -339,6 +349,26 @@ export const AppShell: React.FC = () => {
     }
   };
 
+  /** Opens native OS folder picker, creates a project from the selected folder, and opens it immediately. */
+  const handleOpenFolder = async () => {
+    const desktop = (window as any).desktop;
+    if (!desktop?.openFolderDialog) {
+      // Fallback: open the create project form if not running in Electron
+      setSwitcherDefaultShowAddForm(true);
+      setIsProjectSwitcherOpen(true);
+      return;
+    }
+
+    const selectedPath: string | null = await desktop.openFolderDialog();
+    if (!selectedPath) return; // User cancelled
+
+    // Derive project name from the last folder segment
+    const folderName = selectedPath.split(/[\\/]/).filter(Boolean).pop() || "Untitled Project";
+
+    // Create the project in the database and open it
+    await handleAddProject(folderName, selectedPath, "main");
+  };
+
   const handleArchiveProject = (id: string) => {
     setProjects(prev => prev.map(p => {
       if (p.id === id) {
@@ -346,6 +376,19 @@ export const AppShell: React.FC = () => {
       }
       return p;
     }));
+  };
+
+  const handleCloseProject = () => {
+    setActiveProjectId(null);
+    setSelectedFile(null);
+    setSelectedTask(null);
+    setSelectedAgent(null);
+    setSelectedKnowledgeName(null);
+    setCenterTabs([
+      { id: "timeline", title: "# ai-team-manager-dev", type: "timeline" }
+    ]);
+    setActiveCenterTabId("timeline");
+    setCurrentFiles(mockFiles);
   };
 
   const handleRemoveProject = async (id: string) => {
@@ -927,6 +970,27 @@ export const AppShell: React.FC = () => {
     }, 50);
   };
 
+  // Reload active project data from backend database
+  const reloadProjectData = async (targetProjectId: string) => {
+    if (!targetProjectId) return;
+    try {
+      const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${backendUrl}/api/projects`);
+      if (response.ok) {
+        const data: Project[] = await response.json();
+        setProjects(data);
+        const activeProj = data.find(p => p.id === targetProjectId);
+        if (activeProj) {
+          setTasks(activeProj.tasks);
+          setAgents(activeProj.agents);
+          setMessages(activeProj.messages);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to reload project data from backend", err);
+    }
+  };
+
   // Send message to Codex simulator/router
   const handleSendMessage = async (text: string) => {
     if (!activeProjectId) return;
@@ -971,6 +1035,9 @@ export const AppShell: React.FC = () => {
           }
           return logs;
         });
+
+        // Trigger real-time reload to fetch new tasks/timeline messages created by Codex
+        await reloadProjectData(activeProjectId);
       }
     } catch (err) {
       console.error("Failed to send message to database", err);
@@ -1027,6 +1094,7 @@ export const AppShell: React.FC = () => {
         }}
         onSelectBranch={handleSelectBranch}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onCloseProject={handleCloseProject}
       />
 
       {/* Main Panel Content Grid */}
@@ -1132,6 +1200,7 @@ export const AppShell: React.FC = () => {
         </section>
       ) : (
         <ProjectEmptyState
+          onOpenFolder={handleOpenFolder}
           onOpenProjectSwitcher={() => {
             setSwitcherDefaultShowAddForm(false);
             setIsProjectSwitcherOpen(true);

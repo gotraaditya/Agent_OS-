@@ -258,24 +258,29 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
   onResizeStart,
   onResizeEnd
 }) => {
-  const [selectedChangePath, setSelectedChangePath] = useState<string>("/backend/app/auth.py");
+  const allWorkspaceFiles = Array.from(
+    new Set(tasks.flatMap(t => t.relatedFiles || []))
+  );
+
+  const filesToDisplay = selectedTask ? selectedTask.relatedFiles : allWorkspaceFiles;
+
+  const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
 
   useEffect(() => {
     if (selectedTask && selectedTask.relatedFiles.length > 0) {
-      if (!selectedTask.relatedFiles.includes(selectedChangePath)) {
+      if (!selectedTask.relatedFiles.includes(selectedChangePath || "")) {
         setSelectedChangePath(selectedTask.relatedFiles[0]);
       }
-    } else if (!selectedTask) {
-      const defaultWorkspaceFiles = [
-        "/backend/app/auth.py",
-        "/backend/app/main.py",
-        "/tests/test_database.py"
-      ];
-      if (!defaultWorkspaceFiles.includes(selectedChangePath)) {
-        setSelectedChangePath("/backend/app/auth.py");
+    } else {
+      if (allWorkspaceFiles.length > 0) {
+        if (!allWorkspaceFiles.includes(selectedChangePath || "")) {
+          setSelectedChangePath(allWorkspaceFiles[0]);
+        }
+      } else {
+        setSelectedChangePath(null);
       }
     }
-  }, [selectedTask]);
+  }, [selectedTask, tasks]);
 
   const renderDiff = (diffText: string | undefined) => {
     if (!diffText) {
@@ -431,126 +436,136 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
         {/* Changes Tab */}
         {activeTab === "changes" && (
           <div className="inspector-panel-view changes-view">
-            <div className="changes-inspector-layout">
-              {/* Left Panel: Files & Context list */}
-              <div className="changes-sidebar">
-                {selectedTask && (
-                  <div className="task-mini-summary-card">
-                    <div className="task-summary-header">
-                      <span className="task-summary-id">{selectedTask.id}</span>
-                      <span className={`task-badge status-${selectedTask.status} mini`}>
-                        {selectedTask.status.toUpperCase()}
-                      </span>
-                    </div>
-                    <h4 className="task-summary-title" title={selectedTask.title}>
-                      {selectedTask.title}
-                    </h4>
-                    <div className="task-summary-meta">
-                      <span>@{selectedTask.agentName}</span>
-                      <span>·</span>
-                      <span>{selectedTask.progress}% progress</span>
-                    </div>
-                    <button
-                      className="btn-clear-task-focus"
-                      onClick={onClearTaskSelection}
-                      title="View all files changed on this branch"
-                    >
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="btn-icon">
-                        <path d="M18 6L6 18M6 6l12 12" />
-                      </svg>
-                      All Workspace Changes
-                    </button>
-                  </div>
-                )}
-
-                <div className="changes-files-list-header">
-                  <span>Files Changed</span>
-                  <span className="changes-files-count">
-                    {selectedTask ? selectedTask.relatedFiles.length : 3}
-                  </span>
+            {filesToDisplay.length === 0 ? (
+              <div className="changes-empty-state">
+                <div className="empty-state-icon">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5">
+                    <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" />
+                    <path d="M12 8v4" />
+                    <path d="M12 16h.01" />
+                  </svg>
                 </div>
-
-                <div className="changes-files-list">
-                  {(selectedTask ? selectedTask.relatedFiles : [
-                    "/backend/app/auth.py",
-                    "/backend/app/main.py",
-                    "/tests/test_database.py"
-                  ]).map((path) => {
-                    const status = getFileStatus(path);
-                    const stats = getFileStats(path);
-                    const agent = getFileAgent(path, selectedTask ? selectedTask.agentName : null);
-                    const isActive = selectedChangePath === path;
-                    const fileName = path.split("/").pop() || "";
-
-                    return (
-                      <div
-                        key={path}
-                        className={`changes-file-row ${isActive ? "active" : ""}`}
-                        onClick={() => setSelectedChangePath(path)}
-                      >
-                        <span className={`file-status-dot ${status}`} title={status.toUpperCase()} />
-                        <div className="file-info-group">
-                          <span className="file-name" title={path}>{fileName}</span>
-                          <span className="file-path" title={path}>{path.substring(0, path.lastIndexOf("/"))}</span>
-                        </div>
-                        <div className="file-meta-group">
-                          <div className="diff-stats-wrapper">
-                            <span className="diff-text-add">+{stats.add}</span>
-                            <span className="diff-text-del">-{stats.del}</span>
-                          </div>
-                          <span className={`change-author-badge mini ${agent.toLowerCase()}`}>
-                            @{agent}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <h4>No Code Changes</h4>
+                <p>Select an active task or prompt Codex to generate code changes for this workspace.</p>
               </div>
-
-              {/* Right Panel: Diff Viewer */}
-              <div className="changes-diff-pane">
-                {selectedChangePath ? (
-                  <div className="diff-viewer-container">
-                    <div className="diff-viewer-header">
-                      <div className="diff-viewer-title-group">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7f5af0" strokeWidth="2" className="file-icon">
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8l-6-6z" />
-                          <path d="M14 3v5h5" />
-                        </svg>
-                        <span className="diff-viewer-filename">{selectedChangePath}</span>
-                      </div>
-                      <div className="diff-viewer-actions">
-                        <span className="diff-author-label">
-                          Authored by: <strong className="agent-highlight">@{getFileAgent(selectedChangePath, selectedTask ? selectedTask.agentName : null)}</strong>
+            ) : (
+              <div className="changes-inspector-layout">
+                {/* Left Panel: Files & Context list */}
+                <div className="changes-sidebar">
+                  {selectedTask && (
+                    <div className="task-mini-summary-card">
+                      <div className="task-summary-header">
+                        <span className="task-summary-id">{selectedTask.id}</span>
+                        <span className={`task-badge status-${selectedTask.status} mini`}>
+                          {selectedTask.status.toUpperCase()}
                         </span>
-                        <button
-                          className="btn-open-workspace"
-                          onClick={() => onOpenFileByPath && onOpenFileByPath(selectedChangePath)}
-                          title="Open full file in main editor"
+                      </div>
+                      <h4 className="task-summary-title" title={selectedTask.title}>
+                        {selectedTask.title}
+                      </h4>
+                      <div className="task-summary-meta">
+                        <span>@{selectedTask.agentName}</span>
+                        <span>·</span>
+                        <span>{selectedTask.progress}% progress</span>
+                      </div>
+                      <button
+                        className="btn-clear-task-focus"
+                        onClick={onClearTaskSelection}
+                        title="View all files changed on this branch"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="btn-icon">
+                          <path d="M18 6L6 18M6 6l12 12" />
+                        </svg>
+                        All Workspace Changes
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="changes-files-list-header">
+                    <span>Files Changed</span>
+                    <span className="changes-files-count">
+                      {filesToDisplay.length}
+                    </span>
+                  </div>
+
+                  <div className="changes-files-list">
+                    {filesToDisplay.map((path) => {
+                      const status = getFileStatus(path);
+                      const stats = getFileStats(path);
+                      const agent = getFileAgent(path, selectedTask ? selectedTask.agentName : null);
+                      const isActive = selectedChangePath === path;
+                      const fileName = path.split("/").pop() || "";
+
+                      return (
+                        <div
+                          key={path}
+                          className={`changes-file-row ${isActive ? "active" : ""}`}
+                          onClick={() => setSelectedChangePath(path)}
                         >
-                          Open in Editor
-                        </button>
+                          <span className={`file-status-dot ${status}`} title={status.toUpperCase()} />
+                          <div className="file-info-group">
+                            <span className="file-name" title={path}>{fileName}</span>
+                            <span className="file-path" title={path}>{path.substring(0, path.lastIndexOf("/"))}</span>
+                          </div>
+                          <div className="file-meta-group">
+                            <div className="diff-stats-wrapper">
+                              <span className="diff-text-add">+{stats.add}</span>
+                              <span className="diff-text-del">-{stats.del}</span>
+                            </div>
+                            <span className={`change-author-badge mini ${agent.toLowerCase()}`}>
+                              @{agent}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Right Panel: Diff Viewer */}
+                <div className="changes-diff-pane">
+                  {selectedChangePath ? (
+                    <div className="diff-viewer-container">
+                      <div className="diff-viewer-header">
+                        <div className="diff-viewer-title-group">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7f5af0" strokeWidth="2" className="file-icon">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8l-6-6z" />
+                            <path d="M14 3v5h5" />
+                          </svg>
+                          <span className="diff-viewer-filename">{selectedChangePath}</span>
+                        </div>
+                        <div className="diff-viewer-actions">
+                          <span className="diff-author-label">
+                            Authored by: <strong className="agent-highlight">@{getFileAgent(selectedChangePath, selectedTask ? selectedTask.agentName : null)}</strong>
+                          </span>
+                          <button
+                            className="btn-open-workspace"
+                            onClick={() => onOpenFileByPath && onOpenFileByPath(selectedChangePath)}
+                            title="Open full file in main editor"
+                          >
+                            Open in Editor
+                          </button>
+                        </div>
+                      </div>
+                      <div className="diff-viewer-content scrollable-diff">
+                        {renderDiff(MOCK_DIFFS[selectedChangePath])}
                       </div>
                     </div>
-                    <div className="diff-viewer-content scrollable-diff">
-                      {renderDiff(MOCK_DIFFS[selectedChangePath])}
+                  ) : (
+                    <div className="diff-placeholder">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" className="placeholder-icon">
+                        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="8" y1="13" x2="16" y2="13" />
+                        <line x1="8" y1="17" x2="16" y2="17" />
+                        <line x1="10" y1="9" x2="9" y2="9" />
+                      </svg>
+                      <p>Select a file from the sidebar to view code diffs</p>
                     </div>
-                  </div>
-                ) : (
-                  <div className="diff-placeholder">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" className="placeholder-icon">
-                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                      <polyline points="14 2 14 8 20 8" />
-                      <line x1="8" y1="13" x2="16" y2="13" />
-                      <line x1="8" y1="17" x2="16" y2="17" />
-                      <line x1="10" y1="9" x2="9" y2="9" />
-                    </svg>
-                    <p>Select a file from the sidebar to view code diffs</p>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
