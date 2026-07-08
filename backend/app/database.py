@@ -1,7 +1,67 @@
+import json
 import sqlite3
 from backend.app.config import DATABASE_DIRECTORY, DATABASE_PATH
 from backend.app.agents.codex_adapter import DEFAULT_CODEX_LAUNCH_COMMAND
 from backend.app.mock_seed import seed_database
+
+
+CODEX_WORKER_AGENT = {
+    "name": "Codex Worker",
+    "role": "Implementation Worker",
+    "status": "idle",
+    "current_task": "None",
+    "progress": 0,
+    "last_active": "Just now",
+    "avatar": "CW",
+    "logs": ["[SYSTEM] Codex SDK worker ready for real implementation tasks."],
+    "description": "Real Codex-powered worker that edits the selected workspace and submits diffs for review.",
+    "capabilities": ["backend", "frontend", "testing", "refactoring", "documentation"],
+    "intelligence_level": "Critical",
+    "adapter_type": "CodexSDK",
+    "launch_command": "",
+    "enabled": 1,
+}
+
+
+def ensure_codex_worker_agents(connection: sqlite3.Connection) -> None:
+    cursor = connection.cursor()
+    cursor.execute("SELECT id FROM projects")
+    for row in cursor.fetchall():
+        project_id = row[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM agents WHERE project_id = ? AND name = ?",
+            (project_id, CODEX_WORKER_AGENT["name"]),
+        )
+        if cursor.fetchone()[0] > 0:
+            continue
+
+        cursor.execute(
+            """
+            INSERT INTO agents (
+                project_id, name, role, status, current_task, progress, last_active,
+                avatar, logs, description, capabilities, intelligence_level,
+                adapter_type, launch_command, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_id,
+                CODEX_WORKER_AGENT["name"],
+                CODEX_WORKER_AGENT["role"],
+                CODEX_WORKER_AGENT["status"],
+                CODEX_WORKER_AGENT["current_task"],
+                CODEX_WORKER_AGENT["progress"],
+                CODEX_WORKER_AGENT["last_active"],
+                CODEX_WORKER_AGENT["avatar"],
+                json.dumps(CODEX_WORKER_AGENT["logs"]),
+                CODEX_WORKER_AGENT["description"],
+                json.dumps(CODEX_WORKER_AGENT["capabilities"]),
+                CODEX_WORKER_AGENT["intelligence_level"],
+                CODEX_WORKER_AGENT["adapter_type"],
+                CODEX_WORKER_AGENT["launch_command"],
+                CODEX_WORKER_AGENT["enabled"],
+            ),
+        )
 
 
 def initialize_database() -> None:
@@ -158,6 +218,7 @@ def initialize_database() -> None:
               AND adapter_type = 'Mock'
             """
         )
+        ensure_codex_worker_agents(connection)
         connection.commit()
 
 

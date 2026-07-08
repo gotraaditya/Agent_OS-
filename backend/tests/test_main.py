@@ -1,10 +1,12 @@
 import os
 import tempfile
 import json
+import subprocess
 import pytest
 from fastapi.testclient import TestClient
 from backend.app.database import get_db_connection
 from backend.app.agents.manager import agent_manager
+from backend.app.agents.real_codex_adapter import CodexExecFallbackClient, CodexRunResult, RealCodexAdapter
 
 def test_health_endpoint(client: TestClient):
     response = client.get("/api/health")
@@ -57,11 +59,12 @@ def test_project_crud(client: TestClient):
     assert "id" in new_proj
 
     # Verify default agents were created for this project
-    assert new_proj["agentCount"] == 2
+    assert new_proj["agentCount"] == 3
     agents = new_proj["agents"]
     names = [a["name"] for a in agents]
     assert "Codex" in names
     assert "AntiGravity" in names
+    assert "Codex Worker" in names
 
     # Verify initialization message exists
     assert len(new_proj["messages"]) == 1
@@ -170,6 +173,334 @@ def test_agent_manager_auto_reviews_submitted_tasks(client: TestClient):
 
     client.delete(f"/api/projects/{p_id}")
 
+def test_codex_sdk_worker_completes_with_real_diff_and_review(client: TestClient, tmp_path):
+    project_dir = tmp_path / "codex-worker-project"
+    project_dir.mkdir()
+    tracked_file = project_dir / "tracked.txt"
+    tracked_file.write_text("before\n", encoding="utf-8")
+
+    import subprocess
+    subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    class FakeCodexClient:
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            if sandbox == "danger-full-access":
+                (project_dir / "tracked.txt").write_text("after\n", encoding="utf-8")
+                return CodexRunResult("Implemented the requested edit.")
+            return CodexRunResult("APPROVED\nThe diff is small and correct.")
+
+    proj = client.post("/api/projects", json={
+        "name": "Codex Worker Test",
+        "localPath": str(project_dir),
+        "branch": "main"
+    }).json()
+    p_id = proj["id"]
+
+    adapter_key = (p_id, "Codex Worker")
+    adapter = RealCodexAdapter(str(project_dir), FakeCodexClient())
+    adapter.start()
+    agent_manager.adapters[adapter_key] = adapter
+
+    try:
+        task_payload = {
+            "id": "T-301",
+            "title": "Edit tracked file",
+            "agentName": "Codex Worker",
+            "status": "assigned",
+            "priority": "medium",
+            "progress": 0,
+            "description": "Update tracked.txt",
+            "relatedFiles": ["tracked.txt"],
+            "expectedOutput": "tracked.txt changes"
+        }
+        assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+        agent_manager.tick()
+        assert adapter.thread is not None
+        adapter.thread.join(timeout=10)
+        agent_manager.tick()
+
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-301")
+
+        assert task["status"] == "completed"
+        assert task["progress"] == 100
+        assert task["reviewHistory"][0]["status"] == "approved"
+        assert len(project["fileChanges"]) == 1
+        assert project["fileChanges"][0]["path"] == "tracked.txt"
+        assert "-before" in project["fileChanges"][0]["diffContent"]
+        assert "+after" in project["fileChanges"][0]["diffContent"]
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
+def test_codex_sdk_worker_blocks_on_runtime_failure(client: TestClient, tmp_path):
+    project_dir = tmp_path / "codex-worker-fail"
+    project_dir.mkdir()
+    (project_dir / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    class FailingCodexClient:
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            raise RuntimeError("Codex auth unavailable")
+
+    proj = client.post("/api/projects", json={
+        "name": "Codex Worker Failure",
+        "localPath": str(project_dir),
+        "branch": "main"
+    }).json()
+    p_id = proj["id"]
+
+    adapter_key = (p_id, "Codex Worker")
+    adapter = RealCodexAdapter(str(project_dir), FailingCodexClient())
+    adapter.start()
+    agent_manager.adapters[adapter_key] = adapter
+
+    try:
+        task_payload = {
+            "id": "T-302",
+            "title": "Fail worker",
+            "agentName": "Codex Worker",
+            "status": "assigned",
+            "priority": "medium",
+            "progress": 0,
+            "description": "Trigger fake failure",
+            "relatedFiles": [],
+            "expectedOutput": "blocked task"
+        }
+        assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+        agent_manager.tick()
+        assert adapter.thread is not None
+        adapter.thread.join(timeout=10)
+        agent_manager.tick()
+
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-302")
+        worker = next(a for a in project["agents"] if a["name"] == "Codex Worker")
+
+        assert task["status"] == "blocked"
+        assert worker["status"] == "blocked"
+        assert any("Codex auth unavailable" in log for log in worker["logs"])
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
+def test_codex_exec_fallback_places_approval_flag_before_exec(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr("backend.app.agents.real_codex_adapter.shutil.which", lambda _: "codex")
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return (
+                '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n',
+                "",
+            )
+
+    def fake_popen(cmd, cwd, stdin, stdout, stderr, text):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
+        return FakeProcess()
+
+    monkeypatch.setattr("backend.app.agents.real_codex_adapter.subprocess.Popen", fake_popen)
+
+    result = CodexExecFallbackClient().run("Do work", "C:/tmp", "danger-full-access")
+
+    assert result.final_response == "done"
+    assert captured["cmd"][:4] == ["codex", "-a", "never", "exec"]
+    assert captured["cmd"][-1] == "-"
+    assert captured["stdin"] == subprocess.PIPE
+
+def test_codex_exec_fallback_times_out_and_kills_process(monkeypatch):
+    monkeypatch.setattr("backend.app.agents.real_codex_adapter.shutil.which", lambda _: "codex")
+    monkeypatch.setenv("AI_TEAM_CODEX_TIMEOUT_SECONDS", "1")
+
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+
+        def communicate(self, input=None, timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
+            return ("partial stdout", "partial stderr")
+
+        def kill(self):
+            self.killed = True
+
+    fake_process = FakeProcess()
+    monkeypatch.setattr(
+        "backend.app.agents.real_codex_adapter.subprocess.Popen",
+        lambda *args, **kwargs: fake_process,
+    )
+
+    with pytest.raises(RuntimeError, match="codex exec timed out after 1 seconds"):
+        CodexExecFallbackClient().run("Do work", "C:/tmp", "danger-full-access")
+
+    assert fake_process.killed is True
+
+def test_codex_exec_fallback_reports_empty_output(monkeypatch):
+    monkeypatch.setattr("backend.app.agents.real_codex_adapter.shutil.which", lambda _: "codex")
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return (None, None)
+
+    monkeypatch.setattr(
+        "backend.app.agents.real_codex_adapter.subprocess.Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+
+    with pytest.raises(RuntimeError, match="codex exec returned no JSON output"):
+        CodexExecFallbackClient().run("Do work", "C:/tmp", "danger-full-access")
+
+def test_codex_worker_records_only_diff_changes_since_task_start(client: TestClient, tmp_path):
+    project_dir = tmp_path / "codex-worker-baseline"
+    project_dir.mkdir()
+    tracked_file = project_dir / "tracked.txt"
+    tracked_file.write_text("before\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+    )
+    tracked_file.write_text("preexisting dirty edit\n", encoding="utf-8")
+
+    class FakeCodexClient:
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            if sandbox == "danger-full-access":
+                (project_dir / "APP_REPORT.md").write_text("# Report\n", encoding="utf-8")
+                return CodexRunResult("Wrote the report.")
+            return CodexRunResult("APPROVED\nReport diff is scoped.")
+
+    proj = client.post("/api/projects", json={
+        "name": "Codex Worker Baseline",
+        "localPath": str(project_dir),
+        "branch": "main"
+    }).json()
+    p_id = proj["id"]
+
+    adapter_key = (p_id, "Codex Worker")
+    adapter = RealCodexAdapter(str(project_dir), FakeCodexClient())
+    adapter.start()
+    agent_manager.adapters[adapter_key] = adapter
+
+    try:
+        task_payload = {
+            "id": "T-304",
+            "title": "Write app report",
+            "agentName": "Codex Worker",
+            "status": "assigned",
+            "priority": "medium",
+            "progress": 0,
+            "description": "Write APP_REPORT.md",
+            "relatedFiles": [],
+            "expectedOutput": "APP_REPORT.md"
+        }
+        assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+        agent_manager.tick()
+        assert adapter.thread is not None
+        adapter.thread.join(timeout=10)
+        agent_manager.tick()
+
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-304")
+
+        assert task["status"] == "completed"
+        assert task["relatedFiles"] == ["APP_REPORT.md"]
+        assert [change["path"] for change in project["fileChanges"]] == ["APP_REPORT.md"]
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
+def test_codex_worker_redispatches_orphaned_working_task(client: TestClient, tmp_path):
+    project_dir = tmp_path / "codex-worker-orphan"
+    project_dir.mkdir()
+    (project_dir / "tracked.txt").write_text("before\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    class FakeCodexClient:
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            if sandbox == "danger-full-access":
+                (project_dir / "tracked.txt").write_text("after\n", encoding="utf-8")
+                return CodexRunResult("Recovered the orphaned task.")
+            return CodexRunResult("APPROVED\nRecovery diff is correct.")
+
+    proj = client.post("/api/projects", json={
+        "name": "Codex Worker Orphan",
+        "localPath": str(project_dir),
+        "branch": "main"
+    }).json()
+    p_id = proj["id"]
+
+    task_payload = {
+        "id": "T-303",
+        "title": "Recover orphaned worker",
+        "agentName": "Codex Worker",
+        "status": "working",
+        "priority": "medium",
+        "progress": 10,
+        "description": "This task was already working before restart.",
+        "relatedFiles": ["tracked.txt"],
+        "expectedOutput": "tracked.txt changes"
+    }
+
+    adapter_key = (p_id, "Codex Worker")
+    adapter = RealCodexAdapter(str(project_dir), FakeCodexClient())
+    adapter.start()
+    agent_manager.adapters[adapter_key] = adapter
+
+    try:
+        assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+        agent_manager.tick()
+        assert adapter.thread is not None
+        adapter.thread.join(timeout=10)
+        agent_manager.tick()
+
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-303")
+
+        assert task["status"] == "completed"
+        assert task["progress"] == 100
+        assert project["fileChanges"][0]["path"] == "tracked.txt"
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
 def test_agent_management_constraints(client: TestClient):
     payload = {
         "name": "Agent constraints project",
@@ -259,6 +590,59 @@ def test_messages_and_codex_routing(client: TestClient):
     data = response.json()
     assert "direct communication with worker agents" in data["codexMessage"]["text"]
     assert "AntiGravity" in data["codexMessage"]["text"]
+
+    # 3. Implementation request should route to Codex Worker without old stub text
+    msg_payload = {
+        "id": "msg-103",
+        "sender": "Aditya Gotra",
+        "senderType": "user",
+        "text": "Build a small status widget",
+        "timestamp": "12:02 PM"
+    }
+    response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "CODEX CLI STUB" not in data["codexMessage"]["text"]
+    assert "Codex Worker" in data["codexMessage"]["text"]
+
+    project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+    created_task = next(t for t in project["tasks"] if t["title"] == "Build a small status widget")
+    assert created_task["agentName"] == "Codex Worker"
+
+    # 4. Natural artifact request should create a task without requiring a magic keyword
+    msg_payload = {
+        "id": "msg-104",
+        "sender": "Aditya Gotra",
+        "senderType": "user",
+        "text": "I need a report about what this app does in a markdown file inside the project folder",
+        "timestamp": "12:03 PM"
+    }
+    response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "created task" in data["codexMessage"]["text"].lower()
+    assert "Codex Worker" in data["codexMessage"]["text"]
+
+    project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+    report_task = next(t for t in project["tasks"] if "report about what this app does" in t["title"].lower())
+    assert report_task["agentName"] == "Codex Worker"
+
+    # 5. Status questions should remain conversational and not create another task
+    before_count = len(project["tasks"])
+    msg_payload = {
+        "id": "msg-105",
+        "sender": "Aditya Gotra",
+        "senderType": "user",
+        "text": "What is the current progress of the agents?",
+        "timestamp": "12:04 PM"
+    }
+    response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "progress" in data["codexMessage"]["text"].lower()
+
+    project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+    assert len(project["tasks"]) == before_count
 
     # Clean up project
     client.delete(f"/api/projects/{p_id}")

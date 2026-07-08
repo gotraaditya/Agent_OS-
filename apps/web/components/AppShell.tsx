@@ -1221,6 +1221,7 @@ export const AppShell: React.FC = () => {
           selectedTask={selectedTask}
           selectedAgent={selectedAgent}
           tasks={tasks}
+          fileChanges={activeProject.fileChanges || []}
           generalLogs={generalLogs}
           terminalOutput={terminalOutput}
           onOpenFileByPath={(path) => {

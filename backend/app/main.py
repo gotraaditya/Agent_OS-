@@ -10,9 +10,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.app.database import database_is_ready, initialize_database, get_db_connection
+from backend.app.database import CODEX_WORKER_AGENT, database_is_ready, initialize_database, get_db_connection
 from backend.app.agents.manager import agent_manager
-from backend.app.agents.codex_adapter import CodexCLIAdapter, DEFAULT_CODEX_LAUNCH_COMMAND
+from backend.app.agents.codex_adapter import DEFAULT_CODEX_LAUNCH_COMMAND
 
 
 async def run_agent_simulation_loop():
@@ -69,6 +69,67 @@ IGNORED_FOLDERS = {
 
 
 MAX_FILE_READ_BYTES = 1_000_000
+TASK_ACTION_WORDS = {"build", "create", "implement", "fix", "add", "write", "optimize", "setup", "make", "update", "change", "generate"}
+TASK_ARTIFACT_WORDS = {
+    "file", "report", "markdown", ".md", "doc", "docs", "documentation", "script", "test",
+    "page", "component", "endpoint", "api", "bug", "issue", "feature", "ui", "frontend",
+    "backend", "database", "readme", "folder", "project", "code"
+}
+TASK_REQUEST_PHRASES = {
+    "can you", "could you", "please", "i need", "i want", "we need", "let's", "lets",
+    "make me", "help me", "it should", "put it", "turn this", "generate a"
+}
+STATUS_QUERY_WORDS = {"status", "progress", "agents"}
+HELP_QUERY_WORDS = {"help", "commands", "how"}
+
+
+def is_task_intent(text: str) -> bool:
+    lower_text = text.lower()
+    if any(word in lower_text for word in TASK_ACTION_WORDS):
+        return True
+    if any(word in lower_text for word in STATUS_QUERY_WORDS):
+        return False
+    if lower_text.strip() in HELP_QUERY_WORDS:
+        return False
+    has_request_phrase = any(phrase in lower_text for phrase in TASK_REQUEST_PHRASES)
+    has_artifact_target = any(word in lower_text for word in TASK_ARTIFACT_WORDS)
+    return has_request_phrase and has_artifact_target
+
+
+def build_task_title_from_prompt(text: str) -> str:
+    words = text.split()
+    title = text.strip()
+
+    for i, word in enumerate(words):
+        normalized = word.lower().strip(".,!?;:\"'")
+        if normalized in TASK_ACTION_WORDS:
+            title = " ".join(words[i:]).strip()
+            break
+    else:
+        lowered = title.lower()
+        prefixes = [
+            "can you please ", "could you please ", "can you ", "could you ", "please ",
+            "i need you to ", "i want you to ", "i need ", "i want ", "we need to ",
+            "we need ", "help me ", "make me "
+        ]
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                title = title[len(prefix):].strip()
+                break
+
+    title = title or "Implement requested updates"
+    if len(title) > 60:
+        title = title[:57] + "..."
+    return title[0].upper() + title[1:] if title else "Implement requested updates"
+
+
+def generate_unique_message_id(cursor, prefix: str) -> str:
+    for idx in range(100):
+        candidate = f"{prefix}-{time.time_ns()}-{idx}"
+        cursor.execute("SELECT 1 FROM messages WHERE id = ?", (candidate,))
+        if cursor.fetchone() is None:
+            return candidate
+    raise RuntimeError(f"Unable to generate unique message id for {prefix}.")
 
 
 def resolve_existing_path(path: str) -> str:
@@ -288,6 +349,17 @@ class BranchUpdate(BaseModel):
     branch: str
 
 
+def file_change_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "taskId": row["task_id"],
+        "path": row["file_path"],
+        "changeType": row["change_type"],
+        "diffContent": row["diff_content"],
+        "timestamp": row["timestamp"],
+    }
+
+
 # SQLite Row Serializer Helpers
 def project_to_dict(proj_row, conn) -> dict:
     p_id = proj_row["id"]
@@ -358,6 +430,9 @@ def project_to_dict(proj_row, conn) -> dict:
             "meta": json.loads(r["meta"]) if r["meta"] else None
         })
 
+    cursor.execute("SELECT * FROM file_changes WHERE project_id = ? ORDER BY timestamp ASC, file_path ASC", (p_id,))
+    file_changes = [file_change_to_dict(row) for row in cursor.fetchall()]
+
     return {
         "id": proj_row["id"],
         "name": proj_row["name"],
@@ -370,7 +445,8 @@ def project_to_dict(proj_row, conn) -> dict:
         "files": json.loads(proj_row["mock_files"]) if proj_row["mock_files"] else None,
         "tasks": tasks,
         "agents": agents,
-        "messages": messages
+        "messages": messages,
+        "fileChanges": file_changes
     }
 
 
@@ -435,7 +511,7 @@ async def create_project(body: ProjectCreate):
             (p_id, name, path, "Just now", "development", branch, json.dumps(default_files))
         )
 
-        # Add default agents: Codex and AntiGravity
+        # Add default agents: Codex, AntiGravity, and real Codex Worker
         cursor.execute(
             """
             INSERT INTO agents (
@@ -454,6 +530,33 @@ async def create_project(body: ProjectCreate):
                 "Central AI Orchestration agent coordinating developer team members.",
                 json.dumps(["architecture", "debugging", "documentation", "testing", "refactoring"]),
                 "Critical", "API", DEFAULT_CODEX_LAUNCH_COMMAND, 1
+            )
+        )
+        cursor.execute(
+            """
+            INSERT INTO agents (
+                project_id, name, role, status, current_task, progress, last_active,
+                avatar, logs, description, capabilities, intelligence_level,
+                adapter_type, launch_command, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                p_id,
+                CODEX_WORKER_AGENT["name"],
+                CODEX_WORKER_AGENT["role"],
+                CODEX_WORKER_AGENT["status"],
+                CODEX_WORKER_AGENT["current_task"],
+                CODEX_WORKER_AGENT["progress"],
+                CODEX_WORKER_AGENT["last_active"],
+                CODEX_WORKER_AGENT["avatar"],
+                json.dumps(CODEX_WORKER_AGENT["logs"]),
+                CODEX_WORKER_AGENT["description"],
+                json.dumps(CODEX_WORKER_AGENT["capabilities"]),
+                CODEX_WORKER_AGENT["intelligence_level"],
+                CODEX_WORKER_AGENT["adapter_type"],
+                CODEX_WORKER_AGENT["launch_command"],
+                CODEX_WORKER_AGENT["enabled"],
             )
         )
         cursor.execute(
@@ -689,7 +792,7 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
         if timestamp.startswith("0"): timestamp = timestamp[1:]
 
         return {
-            "id": f"M-CODEX-{int(time.time() * 1000)}",
+            "id": generate_unique_message_id(cursor, "M-CODEX"),
             "sender": "Codex",
             "senderType": "codex",
             "text": codex_reply,
@@ -698,46 +801,11 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
             "meta": None
         }
 
-    # Query launch command for Codex
-    cursor.execute("SELECT launch_command FROM agents WHERE project_id = ? AND name = 'Codex'", (project_id,))
-    row = cursor.fetchone()
-    launch_command = row["launch_command"] if row else DEFAULT_CODEX_LAUNCH_COMMAND
-
-    # Query real Codex agent via CLI
-    adapter = CodexCLIAdapter(launch_command)
-    res = adapter.send_query(text, timeout=5.0)
-
-    use_cli = res["status"] == "success"
-    if not use_cli:
-        print(f"[CODEX CLI ERROR] Failed to connect to real agent: {res.get('error')}")
-
     # Check if user wants to create/assign a task
-    if any(k in lower_text for k in ["build", "create", "implement", "fix", "add", "write", "optimize", "setup"]):
-        assigned_agent = "AntiGravity"  # Default backend agent
+    if is_task_intent(text):
+        assigned_agent = "Codex Worker"
 
-        # Capability Matcher
-        if any(w in lower_text for w in ["frontend", "ui", "css", "html", "page", "dashboard", "component", "button", "view", "interface"]):
-            assigned_agent = "OpenCode"
-        elif any(w in lower_text for w in ["test", "testing", "pytest", "check", "qa", "benchmark"]):
-            assigned_agent = "Blackbox"
-        elif any(w in lower_text for w in ["docker", "image", "container", "devops", "deploy", "alpine", "config"]):
-            assigned_agent = "Kilocode"
-        elif any(w in lower_text for w in ["navbar", "header", "spacing", "padding", "margin", "mobile", "style", "layout"]):
-            assigned_agent = "Mimo Code"
-
-        # Parse task title from request
-        title = "Implement requested updates"
-        words = text.split()
-        for i, word in enumerate(words):
-            if word.lower() in ["build", "create", "implement", "fix", "add", "write", "optimize", "setup"]:
-                title = " ".join(words[i:]).strip()
-                break
-
-        if len(title) > 60:
-            title = title[:57] + "..."
-
-        if title:
-            title = title[0].upper() + title[1:]
+        title = build_task_title_from_prompt(text)
 
         # Fetch current max task ID to increment
         cursor.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
@@ -765,13 +833,13 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
             (
                 new_task_id, project_id, title, assigned_agent, "assigned", "medium", 0,
                 f"Auto-generated from user prompt: '{text}'",
-                json.dumps(["/src/components/Dashboard.tsx"]),
-                "Simulated correct execution block."
+                json.dumps([]),
+                "Real Codex implementation with uncommitted git diff."
             )
         )
 
         # Insert timeline system notification for task creation
-        timeline_msg_id = f"M-SYS-TASK-ADD-{int(time.time() * 1000)}"
+        timeline_msg_id = generate_unique_message_id(cursor, "M-SYS-TASK-ADD")
         timestamp = datetime.now().strftime("%I:%M %p")
         if timestamp.startswith("0"): timestamp = timestamp[1:]
 
@@ -787,93 +855,34 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
             )
         )
 
-        if use_cli:
-            codex_reply = res["response"]
-        else:
-            codex_reply = f"[CLI Fallback] I have analyzed your request. I am creating task {new_task_id}: '{title}' and assigning it to @{assigned_agent} based on capability matching. I will monitor their execution progress."
+        codex_reply = (
+            f"I created task {new_task_id}: '{title}' and assigned it to @{assigned_agent}. "
+            "The worker will run Codex against the selected workspace, leave changes as an uncommitted git diff, "
+            "and send the result through a Codex review pass before completion."
+        )
 
-    elif any(k in lower_text for k in ["task", "create", "new"]):
-        if use_cli:
-            codex_reply = res["response"]
-        else:
-            codex_reply = "[CLI Fallback] I can assist in task definition. To create a new task and assign it to a worker agent, click the **New Task** button on the top right corner. Fill out the details, and I will dispatch it to the designated agent adapter."
+    elif any(k in lower_text for k in ["task", "new"]):
+        codex_reply = "I can create and dispatch tasks from this console. Describe the outcome you want, like a file, report, fix, test, or feature, and I will route the work to @Codex Worker."
     elif any(k in lower_text for k in ["status", "progress", "agents"]):
-        if use_cli:
-            codex_reply = res["response"]
+        cursor.execute("SELECT status, progress, current_task FROM agents WHERE project_id = ? AND name = 'Codex Worker'", (project_id,))
+        worker = cursor.fetchone()
+        if worker:
+            codex_reply = f"Codex Worker is {worker['status']} at {worker['progress']}% progress. Current task: {worker['current_task'] or 'None'}."
         else:
-            codex_reply = "[CLI Fallback] Currently, OpenCode is working on T-2 (Create Dashboard, 68% progress) and Blackbox is addressing my review revisions on T-3 (DB tests, 90% progress). AntiGravity and Mimo Code are idle, and Kilocode is blocked by Docker issues."
+            codex_reply = "Codex Worker is not registered for this project yet. Restart the backend to backfill the real worker agent."
     elif any(k in lower_text for k in ["help", "commands", "how"]):
-        if use_cli:
-            codex_reply = res["response"]
-        else:
-            codex_reply = "[CLI Fallback] I am Codex, the Lead Engineer. You can communicate with me here. Use the Left Panel to view project files, task groups, and knowledge docs. You can click on agents on the right to inspect their live subprocess logs in the Bottom Inspector panel below."
+        codex_reply = "I am the coordinator. Describe the outcome you want, like a file, report, fix, test, or feature, and I will create a task for @Codex Worker. You can inspect worker logs, diffs, and reviews in the bottom inspector."
     elif any(k in lower_text for k in ["backend", "database"]):
-        if use_cli:
-            codex_reply = res["response"]
-        else:
-            codex_reply = "[CLI Fallback] The FastAPI backend is fully connected and responding. The sqlite database is initialized. AntiGravity completed the JWT authentication middleware (T-1) which I approved. Blackbox is testing the database connector routines next."
+        codex_reply = "The FastAPI backend is connected and SQLite is initialized. Real implementation tasks now route through @Codex Worker, with diffs persisted for review."
     else:
-        if use_cli:
-            codex_reply = res["response"]
-            # Auto-route design stubs to a real Mimo Code task card
-            if "Routing instruction to the design workspace" in codex_reply:
-                cursor.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,))
-                task_rows = cursor.fetchall()
-                max_num = 0
-                for r in task_rows:
-                    id_str = r["id"]
-                    if id_str.startswith("T-"):
-                        try:
-                            num = int(id_str[2:])
-                            if num > max_num:
-                                max_num = num
-                        except ValueError:
-                            pass
-
-                new_task_num = max_num + 1
-                new_task_id = f"T-{new_task_num}"
-                title = f"Design workspace rules for '{text}'"
-                if len(title) > 60:
-                    title = title[:57] + "..."
-
-                cursor.execute(
-                    """
-                    INSERT INTO tasks (id, project_id, title, agent_name, status, priority, progress, description, related_files, expected_output)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_task_id, project_id, title, "Mimo Code", "assigned", "medium", 0,
-                        f"Auto-routed design instruction from user prompt: '{text}'",
-                        json.dumps(["/src/components/Navbar.tsx"]),
-                        "Updated layout guidelines and spacing guidelines."
-                    )
-                )
-
-                # Insert timeline system notification for task creation
-                timeline_msg_id = f"M-SYS-TASK-ADD-{int(time.time() * 1000)}"
-                sys_time = datetime.now().strftime("%I:%M %p")
-                if sys_time.startswith("0"): sys_time = sys_time[1:]
-
-                cursor.execute(
-                    """
-                    INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        timeline_msg_id, project_id, "System", "system",
-                        f"Task {new_task_id} ('{title}') was created and assigned to @Mimo Code.",
-                        sys_time, None, None
-                    )
-                )
-        else:
-            codex_reply = "[CLI Fallback] Understood. I will parse your instruction in the context of the current project branch. Let me know if you would like me to allocate any subtasks or trigger a code review on the active changes in the workspace."
+        codex_reply = "Understood. If you want me to change the project, describe the file, fix, feature, test, or report you want and I will create a real @Codex Worker task."
 
     timestamp = datetime.now().strftime("%I:%M %p")
     if timestamp.startswith("0"):
         timestamp = timestamp[1:]
 
     return {
-        "id": f"M-CODEX-{int(time.time() * 1000)}",
+        "id": generate_unique_message_id(cursor, "M-CODEX"),
         "sender": "Codex",
         "senderType": "codex",
         "text": codex_reply,

@@ -43,7 +43,7 @@ interface AdapterTypeSelectProps {
   onChange: (value: string) => void;
 }
 
-export const ADAPTER_TYPES = ["Mock", "CLI", "API", "Manual"];
+export const ADAPTER_TYPES = ["Mock", "CLI", "API", "Manual", "CodexSDK"];
 
 export const AdapterTypeSelect: React.FC<AdapterTypeSelectProps> = ({ value, onChange }) => {
   return (
@@ -57,7 +57,7 @@ export const AdapterTypeSelect: React.FC<AdapterTypeSelectProps> = ({ value, onC
       >
         {ADAPTER_TYPES.map((type) => (
           <option key={type} value={type}>
-            {type}
+          {type === "CodexSDK" ? "Codex SDK" : type}
           </option>
         ))}
       </select>

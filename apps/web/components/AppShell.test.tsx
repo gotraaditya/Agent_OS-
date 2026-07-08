@@ -4,6 +4,8 @@ import React from "react";
 import { ProjectEmptyState } from "./ProjectEmptyState";
 import { TopHeader } from "./TopHeader";
 import { AppShell } from "./AppShell";
+import { AdapterTypeSelect } from "./AgentSubComponents";
+import { BottomInspector } from "./BottomInspector";
 
 // Mock fetch globally
 const mockProjectsData = [
@@ -185,6 +187,60 @@ describe("TopHeader Component", () => {
     expect(screen.getByText("Test Project Alpha")).toBeDefined();
     expect(screen.getByText("main")).toBeDefined();
     expect(screen.getByText("3 active tasks")).toBeDefined();
+  });
+});
+
+describe("Agent Adapter Controls", () => {
+  it("offers the Codex SDK adapter type", () => {
+    render(<AdapterTypeSelect value="CodexSDK" onChange={vi.fn()} />);
+
+    expect(screen.getByText("Codex SDK")).toBeDefined();
+  });
+});
+
+describe("BottomInspector Component", () => {
+  it("renders real file change diffs when provided", () => {
+    const task = {
+      id: "T-REAL",
+      title: "Real diff task",
+      agentName: "Codex Worker",
+      status: "review" as const,
+      priority: "medium" as const,
+      progress: 90,
+      description: "Use real file changes",
+      relatedFiles: ["src/app.ts"],
+      expectedOutput: "Updated file",
+      reviewHistory: []
+    };
+
+    render(
+      <BottomInspector
+        activeTab="changes"
+        onTabChange={vi.fn()}
+        selectedFile={null}
+        selectedTask={task}
+        selectedAgent={null}
+        tasks={[task]}
+        fileChanges={[
+          {
+            id: "fc-1",
+            taskId: "T-REAL",
+            path: "src/app.ts",
+            changeType: "modified",
+            diffContent: "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-before\n+after\n",
+            timestamp: "12:00 PM"
+          }
+        ]}
+        generalLogs={[]}
+        terminalOutput={[]}
+        inspectorHeight={220}
+        onResize={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("app.ts")).toBeDefined();
+    expect(screen.getByText("before")).toBeDefined();
+    expect(screen.getByText("after")).toBeDefined();
   });
 });
 

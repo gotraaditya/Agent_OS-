@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Agent, FileNode, Task } from "../types";
+import { Agent, FileChange, FileNode, Task } from "../types";
 
 // Mock diffs database
 const MOCK_DIFFS: Record<string, string> = {
@@ -152,6 +152,17 @@ const getFileStats = (path: string) => {
   return { add: 2, del: 1 };
 };
 
+const getRealFileStats = (diffText: string) => {
+  return diffText.split("\n").reduce(
+    (stats, line) => {
+      if (line.startsWith("+") && !line.startsWith("+++")) stats.add += 1;
+      if (line.startsWith("-") && !line.startsWith("---")) stats.del += 1;
+      return stats;
+    },
+    { add: 0, del: 0 }
+  );
+};
+
 const getFileAgent = (path: string, taskAgent: string | null): string => {
   if (taskAgent) return taskAgent;
   if (path === "/tests/test_database.py") return "Blackbox";
@@ -228,6 +239,7 @@ interface BottomInspectorProps {
   selectedTask: Task | null;
   selectedAgent: Agent | null;
   tasks: Task[];
+  fileChanges?: FileChange[];
   generalLogs: string[];
   terminalOutput: string[];
   onOpenFileByPath?: (path: string) => void;
@@ -247,6 +259,7 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
   selectedTask,
   selectedAgent,
   tasks,
+  fileChanges = [],
   generalLogs,
   terminalOutput,
   onOpenFileByPath,
@@ -258,18 +271,26 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
   onResizeStart,
   onResizeEnd
 }) => {
-  const allWorkspaceFiles = Array.from(
+  const realChangesForTask = selectedTask
+    ? fileChanges.filter(change => change.taskId === selectedTask.id)
+    : fileChanges;
+  const realChangeByPath = new Map(realChangesForTask.map(change => [change.path, change]));
+  const realWorkspaceFiles = Array.from(new Set(realChangesForTask.map(change => change.path)));
+  const mockWorkspaceFiles = Array.from(
     new Set(tasks.flatMap(t => t.relatedFiles || []))
   );
+  const allWorkspaceFiles = realWorkspaceFiles.length > 0 ? realWorkspaceFiles : mockWorkspaceFiles;
 
-  const filesToDisplay = selectedTask ? selectedTask.relatedFiles : allWorkspaceFiles;
+  const filesToDisplay = selectedTask
+    ? (realWorkspaceFiles.length > 0 ? realWorkspaceFiles : selectedTask.relatedFiles)
+    : allWorkspaceFiles;
 
   const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
 
   useEffect(() => {
-    if (selectedTask && selectedTask.relatedFiles.length > 0) {
-      if (!selectedTask.relatedFiles.includes(selectedChangePath || "")) {
-        setSelectedChangePath(selectedTask.relatedFiles[0]);
+    if (selectedTask && filesToDisplay.length > 0) {
+      if (!filesToDisplay.includes(selectedChangePath || "")) {
+        setSelectedChangePath(filesToDisplay[0]);
       }
     } else {
       if (allWorkspaceFiles.length > 0) {
@@ -280,7 +301,7 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
         setSelectedChangePath(null);
       }
     }
-  }, [selectedTask, tasks]);
+  }, [selectedTask, tasks, fileChanges]);
 
   const renderDiff = (diffText: string | undefined) => {
     if (!diffText) {
@@ -490,8 +511,9 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
 
                   <div className="changes-files-list">
                     {filesToDisplay.map((path) => {
-                      const status = getFileStatus(path);
-                      const stats = getFileStats(path);
+                      const realChange = realChangeByPath.get(path);
+                      const status = realChange?.changeType || getFileStatus(path);
+                      const stats = realChange ? getRealFileStats(realChange.diffContent) : getFileStats(path);
                       const agent = getFileAgent(path, selectedTask ? selectedTask.agentName : null);
                       const isActive = selectedChangePath === path;
                       const fileName = path.split("/").pop() || "";
@@ -548,7 +570,7 @@ export const BottomInspector: React.FC<BottomInspectorProps> = ({
                         </div>
                       </div>
                       <div className="diff-viewer-content scrollable-diff">
-                        {renderDiff(MOCK_DIFFS[selectedChangePath])}
+                        {renderDiff(realChangeByPath.get(selectedChangePath)?.diffContent || MOCK_DIFFS[selectedChangePath])}
                       </div>
                     </div>
                   ) : (

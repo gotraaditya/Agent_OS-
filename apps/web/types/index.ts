@@ -73,6 +73,15 @@ export interface FileNode {
   language?: string;
 }
 
+export interface FileChange {
+  id: string;
+  taskId: string;
+  path: string;
+  changeType: "added" | "modified" | "deleted";
+  diffContent: string;
+  timestamp: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -86,4 +95,5 @@ export interface Project {
   tasks: Task[];
   agents: Agent[];
   messages: Message[];
+  fileChanges?: FileChange[];
 }
