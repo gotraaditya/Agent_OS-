@@ -43,7 +43,7 @@ interface AdapterTypeSelectProps {
   onChange: (value: string) => void;
 }
 
-export const ADAPTER_TYPES = ["Mock", "CLI", "API", "Manual", "CodexSDK"];
+export const ADAPTER_TYPES = ["CodexSDK", "CLI", "API", "Manual", "Mock", "Unavailable", "Misconfigured"];
 
 export const AdapterTypeSelect: React.FC<AdapterTypeSelectProps> = ({ value, onChange }) => {
   return (

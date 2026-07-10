@@ -998,6 +998,14 @@ export const AppShell: React.FC = () => {
       const backendUrl = (window as any).desktop?.backendUrl || "http://127.0.0.1:8000";
       const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const userMsgId = `M-USER-${Date.now()}`;
+      const localUserMsg: Message = {
+        id: userMsgId,
+        sender: "Aditya Gotra",
+        senderType: "user",
+        text,
+        timestamp,
+        avatar: "AG"
+      };
 
       // Save user message and get Codex response from backend
       const response = await fetch(`${backendUrl}/api/projects/${activeProjectId}/messages`, {
@@ -1013,6 +1021,30 @@ export const AppShell: React.FC = () => {
           meta: null
         })
       });
+
+      if (!response.ok) {
+        let detail = "Codex chat is unavailable.";
+        try {
+          const errorData = await response.json();
+          if (typeof errorData.detail === "string") {
+            detail = errorData.detail;
+          }
+        } catch {
+          // Keep the fallback detail when the backend returns a non-JSON error.
+        }
+
+        const errorMsg: Message = {
+          id: `M-CODEX-ERROR-${Date.now()}`,
+          sender: "Codex",
+          senderType: "codex",
+          text: detail,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          avatar: "CX"
+        };
+        setMessages(prev => [...prev, localUserMsg, errorMsg]);
+        setGeneralLogs(prev => [...prev, `[CHAT] User: "${text}"`, `[CHAT] Codex: "${detail}"`]);
+        return;
+      }
 
       if (response.ok) {
         const data = await response.json();

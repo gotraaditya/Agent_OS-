@@ -1,6 +1,46 @@
 import sys
 import json
 import time
+from datetime import datetime
+from pathlib import Path
+
+
+def safe_file_stem(value):
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value).strip("_") or "task"
+
+
+def write_task_report(task):
+    task_id = task.get("task_id", "T-X")
+    title = task.get("title", "Updates")
+    description = task.get("description", "")
+    expected = task.get("expected_output", "")
+    related_files = task.get("related_files", [])
+    report_path = Path.cwd() / f"ANTIGRAVITY_TASK_{safe_file_stem(task_id)}.md"
+
+    report_path.write_text(
+        "\n".join([
+            f"# AntiGravity Task Report: {task_id}",
+            "",
+            f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+            f"Title: {title}",
+            "",
+            "## Description",
+            description or "No description provided.",
+            "",
+            "## Expected Output",
+            expected or "No expected output provided.",
+            "",
+            "## Related Files",
+            *(f"- {path}" for path in related_files),
+            *([] if related_files else ["- None"]),
+            "",
+            "## Result",
+            "AntiGravity received the task, processed the project context, and produced this report as a visible workspace artifact for adapter testing.",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    return report_path.name
 
 def main():
     # Read task package from stdin
@@ -26,8 +66,9 @@ def main():
     time.sleep(1)
 
     print("[PROGRESS] 60%")
-    print("[RUN] Implementing auth session middleware JWT handlers...")
-    print("[RUN] Binding token verification logic to FastAPIs lifespan context decorator...")
+    print("[RUN] Preparing visible AntiGravity workspace artifact...")
+    report_name = write_task_report(task)
+    print(f"[RUN] Wrote {report_name} in the project workspace.")
     sys.stdout.flush()
     time.sleep(1.5)
 

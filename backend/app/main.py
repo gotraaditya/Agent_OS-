@@ -13,6 +13,10 @@ from pydantic import BaseModel
 from backend.app.database import CODEX_WORKER_AGENT, database_is_ready, initialize_database, get_db_connection
 from backend.app.agents.manager import agent_manager
 from backend.app.agents.codex_adapter import DEFAULT_CODEX_LAUNCH_COMMAND
+from backend.app.agents.real_codex_adapter import AutoCodexClient
+
+
+codex_chat_client = AutoCodexClient()
 
 
 async def run_agent_simulation_loop():
@@ -69,23 +73,36 @@ IGNORED_FOLDERS = {
 
 
 MAX_FILE_READ_BYTES = 1_000_000
-TASK_ACTION_WORDS = {"build", "create", "implement", "fix", "add", "write", "optimize", "setup", "make", "update", "change", "generate"}
+TASK_ACTION_WORDS = {"build", "create", "implement", "fix", "add", "write", "optimize", "setup", "make", "update", "change", "generate", "assign"}
 TASK_ARTIFACT_WORDS = {
     "file", "report", "markdown", ".md", "doc", "docs", "documentation", "script", "test",
     "page", "component", "endpoint", "api", "bug", "issue", "feature", "ui", "frontend",
     "backend", "database", "readme", "folder", "project", "code"
 }
 TASK_REQUEST_PHRASES = {
-    "can you", "could you", "please", "i need", "i want", "we need", "let's", "lets",
+    "can you", "could you", "i need", "i want", "we need", "let's", "lets",
     "make me", "help me", "it should", "put it", "turn this", "generate a"
 }
 STATUS_QUERY_WORDS = {"status", "progress", "agents"}
 HELP_QUERY_WORDS = {"help", "commands", "how"}
+ANTIGRAVITY_TEST_PHRASES = {
+    "test antigravity",
+    "test anti gravity",
+    "testing antigravity",
+    "testing anti gravity",
+    "antigravity test",
+    "anti gravity test",
+    "check antigravity",
+    "check anti gravity",
+    "antigravity working",
+    "anti gravity working",
+}
 
 
 def is_task_intent(text: str) -> bool:
     lower_text = text.lower()
-    if any(word in lower_text for word in TASK_ACTION_WORDS):
+    normalized_words = {word.strip(".,!?;:\"'()[]{}") for word in lower_text.split()}
+    if TASK_ACTION_WORDS.intersection(normalized_words):
         return True
     if any(word in lower_text for word in STATUS_QUERY_WORDS):
         return False
@@ -94,6 +111,17 @@ def is_task_intent(text: str) -> bool:
     has_request_phrase = any(phrase in lower_text for phrase in TASK_REQUEST_PHRASES)
     has_artifact_target = any(word in lower_text for word in TASK_ARTIFACT_WORDS)
     return has_request_phrase and has_artifact_target
+
+
+def is_antigravity_task_request(text: str) -> bool:
+    lower_text = text.lower()
+    compact_text = lower_text.replace("anti gravity", "antigravity")
+    if any(phrase in lower_text for phrase in ANTIGRAVITY_TEST_PHRASES):
+        return True
+    return "antigravity" in compact_text and any(
+        word in compact_text
+        for word in ["test", "testing", "check", "verify", "working"]
+    )
 
 
 def build_task_title_from_prompt(text: str) -> str:
@@ -768,42 +796,87 @@ async def update_agent(project_id: str, agent_name: str, body: AgentUpdate):
         conn.close()
 
 
-def generate_codex_response(project_id: str, text: str, conn) -> dict:
-    lower_text = text.lower()
+def build_codex_chat_prompt(project_id: str, text: str, conn) -> tuple[str, str]:
     cursor = conn.cursor()
+    cursor.execute("SELECT name, local_path, branch, status FROM projects WHERE id = ?", (project_id,))
+    project = cursor.fetchone()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check if user tries to direct-command worker agents in V1
-    workers = ["@antigravity", "@opencode", "@blackbox", "@kilocode", "@mimocode", "@mimo"]
-    mentioned_workers = [w for w in workers if w in lower_text]
+    workspace_path = resolve_existing_path(project["local_path"])
+    if not os.path.isdir(workspace_path):
+        raise RuntimeError(f"Project workspace is not a directory: {workspace_path}")
 
-    if mentioned_workers:
-        display_names = []
-        for mw in mentioned_workers:
-            if mw == "@antigravity": display_names.append("AntiGravity")
-            elif mw == "@opencode": display_names.append("OpenCode")
-            elif mw == "@blackbox": display_names.append("Blackbox")
-            elif mw == "@kilocode": display_names.append("Kilocode")
-            elif mw in ["@mimocode", "@mimo"]: display_names.append("Mimo Code")
+    cursor.execute(
+        """
+        SELECT name, role, status, current_task, progress
+        FROM agents
+        WHERE project_id = ?
+        ORDER BY name
+        """,
+        (project_id,),
+    )
+    agents = [dict(row) for row in cursor.fetchall()]
 
-        display_names_str = ", ".join(display_names)
-        codex_reply = f"In V1, direct communication with worker agents (like {display_names_str}) is disabled to maintain centralized control. Please tell me what you need, and I will handle task assignments and coordination with the team."
+    cursor.execute(
+        """
+        SELECT id, title, agent_name, status, priority, progress, description
+        FROM tasks
+        WHERE project_id = ?
+        ORDER BY rowid DESC
+        LIMIT 20
+        """,
+        (project_id,),
+    )
+    tasks = [dict(row) for row in cursor.fetchall()]
 
-        timestamp = datetime.now().strftime("%I:%M %p")
-        if timestamp.startswith("0"): timestamp = timestamp[1:]
+    cursor.execute(
+        """
+        SELECT sender, sender_type, text, timestamp
+        FROM messages
+        WHERE project_id = ?
+        ORDER BY rowid DESC
+        LIMIT 21
+        """,
+        (project_id,),
+    )
+    recent_messages = [dict(row) for row in reversed(cursor.fetchall())]
+    if (
+        recent_messages
+        and recent_messages[-1]["sender_type"] == "user"
+        and recent_messages[-1]["text"] == text
+    ):
+        recent_messages.pop()
+    recent_messages = recent_messages[-20:]
 
-        return {
-            "id": generate_unique_message_id(cursor, "M-CODEX"),
-            "sender": "Codex",
-            "senderType": "codex",
-            "text": codex_reply,
-            "timestamp": timestamp,
-            "avatar": "CX",
-            "meta": None
-        }
+    context = {
+        "project": dict(project),
+        "agents": agents,
+        "recent_tasks": tasks,
+        "recent_messages": recent_messages,
+    }
+    prompt = (
+        "You are Codex, the lead coordinator inside AI Team Manager. Reply directly to the user's "
+        "message as a capable coding assistant. This is a conversational, read-only turn: you may "
+        "inspect the selected workspace when useful, but you must not edit files, run destructive "
+        "commands, or claim that a task or change was created. Use the supplied live project state "
+        "when the user asks about this project, its tasks, or its agents. Be concise and natural.\n\n"
+        f"Live AI Team Manager context:\n{json.dumps(context, indent=2)}\n\n"
+        f"User message:\n{text}"
+    )
+    return prompt, workspace_path
+
+
+async def generate_codex_response(project_id: str, text: str, conn) -> dict:
+    cursor = conn.cursor()
 
     # Check if user wants to create/assign a task
     if is_task_intent(text):
-        assigned_agent = "Codex Worker"
+        assigned_agent = (
+            "AntiGravity"
+            if is_antigravity_task_request(text)
+            else "Codex Worker"
+        )
 
         title = build_task_title_from_prompt(text)
 
@@ -834,7 +907,11 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
                 new_task_id, project_id, title, assigned_agent, "assigned", "medium", 0,
                 f"Auto-generated from user prompt: '{text}'",
                 json.dumps([]),
-                "Real Codex implementation with uncommitted git diff."
+                (
+                    "AntiGravity worker test task with uncommitted git diff."
+                    if assigned_agent == "AntiGravity"
+                    else "Real Codex implementation with uncommitted git diff."
+                )
             )
         )
 
@@ -857,25 +934,29 @@ def generate_codex_response(project_id: str, text: str, conn) -> dict:
 
         codex_reply = (
             f"I created task {new_task_id}: '{title}' and assigned it to @{assigned_agent}. "
-            "The worker will run Codex against the selected workspace, leave changes as an uncommitted git diff, "
-            "and send the result through a Codex review pass before completion."
+            + (
+                "AntiGravity will run through its CLI adapter, stream progress logs, and send the result through Codex review."
+                if assigned_agent == "AntiGravity"
+                else "The worker will run Codex against the selected workspace, leave changes as an uncommitted git diff, and send the result through a Codex review pass before completion."
+            )
         )
 
-    elif any(k in lower_text for k in ["task", "new"]):
-        codex_reply = "I can create and dispatch tasks from this console. Describe the outcome you want, like a file, report, fix, test, or feature, and I will route the work to @Codex Worker."
-    elif any(k in lower_text for k in ["status", "progress", "agents"]):
-        cursor.execute("SELECT status, progress, current_task FROM agents WHERE project_id = ? AND name = 'Codex Worker'", (project_id,))
-        worker = cursor.fetchone()
-        if worker:
-            codex_reply = f"Codex Worker is {worker['status']} at {worker['progress']}% progress. Current task: {worker['current_task'] or 'None'}."
-        else:
-            codex_reply = "Codex Worker is not registered for this project yet. Restart the backend to backfill the real worker agent."
-    elif any(k in lower_text for k in ["help", "commands", "how"]):
-        codex_reply = "I am the coordinator. Describe the outcome you want, like a file, report, fix, test, or feature, and I will create a task for @Codex Worker. You can inspect worker logs, diffs, and reviews in the bottom inspector."
-    elif any(k in lower_text for k in ["backend", "database"]):
-        codex_reply = "The FastAPI backend is connected and SQLite is initialized. Real implementation tasks now route through @Codex Worker, with diffs persisted for review."
     else:
-        codex_reply = "Understood. If you want me to change the project, describe the file, fix, feature, test, or report you want and I will create a real @Codex Worker task."
+        try:
+            prompt, workspace_path = build_codex_chat_prompt(project_id, text, conn)
+            result = await asyncio.to_thread(
+                codex_chat_client.run,
+                prompt,
+                workspace_path,
+                "read-only",
+            )
+            codex_reply = result.final_response.strip()
+            if not codex_reply:
+                raise RuntimeError("Codex returned an empty response.")
+        except HTTPException:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=f"Codex chat is unavailable: {exc}") from exc
 
     timestamp = datetime.now().strftime("%I:%M %p")
     if timestamp.startswith("0"):
@@ -936,9 +1017,13 @@ async def create_message(project_id: str, body: MessageCreate):
 
         codex_message_dict = None
 
-        # If it's a user message, generate and save Codex response atomically
+        # Persist the user's message before invoking Codex so a long chat turn does not
+        # hold a SQLite write lock and block worker progress updates.
+        conn.commit()
+
+        # If it's a user message, generate and save the Codex response.
         if body.senderType == "user":
-            codex_message_dict = generate_codex_response(project_id, body.text, conn)
+            codex_message_dict = await generate_codex_response(project_id, body.text, conn)
             cursor.execute(
                 """
                 INSERT INTO messages (id, project_id, sender, sender_type, text, timestamp, avatar, meta)

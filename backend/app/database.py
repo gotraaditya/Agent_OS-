@@ -1,7 +1,9 @@
 import json
+import shutil
 import sqlite3
 from backend.app.config import DATABASE_DIRECTORY, DATABASE_PATH
 from backend.app.agents.codex_adapter import DEFAULT_CODEX_LAUNCH_COMMAND
+from backend.app.agents.cli_worker_adapter import CLI_AGENT_DEFAULT_COMMANDS
 from backend.app.mock_seed import seed_database
 
 
@@ -21,6 +23,9 @@ CODEX_WORKER_AGENT = {
     "launch_command": "",
     "enabled": 1,
 }
+
+
+UNVERIFIED_WORKER_AGENTS = tuple(CLI_AGENT_DEFAULT_COMMANDS.keys())
 
 
 def ensure_codex_worker_agents(connection: sqlite3.Connection) -> None:
@@ -219,6 +224,47 @@ def initialize_database() -> None:
             """
         )
         ensure_codex_worker_agents(connection)
+        for agent_name, command in CLI_AGENT_DEFAULT_COMMANDS.items():
+            if shutil.which(command):
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET adapter_type = 'CLI',
+                        launch_command = ?,
+                        status = CASE WHEN status = 'working' THEN 'idle' ELSE status END,
+                        current_task = CASE WHEN current_task LIKE 'T-%:%' THEN 'None' ELSE current_task END,
+                        progress = CASE WHEN status = 'working' THEN 0 ELSE progress END,
+                        logs = ?
+                    WHERE name = ?
+                    """,
+                    (
+                        command,
+                        json.dumps([
+                            f"[SYSTEM] {agent_name} CLI detected on PATH.",
+                            "[SYSTEM] Real CLI adapter available; tasks will run in the selected workspace.",
+                        ]),
+                        agent_name,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE agents
+                    SET adapter_type = 'Unavailable',
+                        status = 'blocked',
+                        current_task = 'Unavailable until a real CLI/API is installed',
+                        progress = 0,
+                        logs = ?
+                    WHERE name = ?
+                    """,
+                    (
+                        json.dumps([
+                            f"[UNAVAILABLE] {command} was not found on PATH.",
+                            "[UNAVAILABLE] Install/configure the CLI before assigning tasks to this agent.",
+                        ]),
+                        agent_name,
+                    ),
+                )
         connection.commit()
 
 

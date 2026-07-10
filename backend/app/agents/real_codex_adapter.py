@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from backend.app.agents.base import AgentAdapter
+from backend.app.agents.base import AgentAdapter, AgentRunResult, AgentTaskPackage, resolve_existing_workspace
 
 
 @dataclass
@@ -61,13 +61,17 @@ class CodexExecFallbackClient:
             "-a",
             "never",
             "exec",
+        ]
+        if os.environ.get("AI_TEAM_CODEX_IGNORE_USER_CONFIG", "1").lower() not in {"0", "false", "no"}:
+            cmd.append("--ignore-user-config")
+        cmd.extend([
             "--json",
             "--color",
             "never",
             "--sandbox",
             sandbox,
             "-",
-        ]
+        ])
         process = subprocess.Popen(
             cmd,
             cwd=cwd,
@@ -229,15 +233,24 @@ def filter_diff_entries_since_baseline(current_entries: list[dict], baseline_ent
     ]
 
 
-def build_worker_prompt(task_id: str, title: str, description: str, expected_output: str, related_files: list[str]) -> str:
+def build_worker_prompt(
+    task_id: str,
+    title: str,
+    description: str,
+    expected_output: str,
+    related_files: list[str],
+    task_package: dict | None = None,
+) -> str:
     files = ", ".join(related_files) if related_files else "No files were preselected."
+    package_text = f"\nStructured task package:\n{json.dumps(task_package, indent=2)}\n" if task_package else ""
     return (
         f"You are Codex Worker running inside AI Team Manager.\n"
         f"Task ID: {task_id}\n"
         f"Title: {title}\n"
         f"Description: {description or 'No additional description provided.'}\n"
         f"Expected output: {expected_output or 'Implement the requested change safely.'}\n"
-        f"Related files: {files}\n\n"
+        f"Related files: {files}\n"
+        f"{package_text}\n"
         "Implement the smallest correct change in this workspace. "
         "Do not commit, branch, push, or open a pull request. "
         "Leave your changes as an uncommitted git diff and summarize what changed."
@@ -254,6 +267,12 @@ def build_review_prompt(task_id: str, title: str, diff_text: str) -> str:
 
 
 class RealCodexAdapter(AgentAdapter):
+    adapter_kind = "CodexSDK"
+    supports_workspace_execution = True
+    supports_file_modification = True
+    supports_streaming = False
+    supports_task_resume = True
+
     def __init__(self, project_path: str | None, client: CodexClient | None = None):
         self.project_path = project_path
         self.client = client or AutoCodexClient()
@@ -266,6 +285,7 @@ class RealCodexAdapter(AgentAdapter):
         self.diff_text = ""
         self.diff_entries: list[dict] = []
         self.error: str | None = None
+        self.task_package: AgentTaskPackage | None = None
 
     def start(self) -> None:
         self.status = "idle"
@@ -277,6 +297,22 @@ class RealCodexAdapter(AgentAdapter):
         self.logs.append("[SYSTEM] Codex SDK worker adapter stopped.")
 
     def send_task(self, task_id: str, title: str, description: str, expected_output: str, related_files: list[str]) -> None:
+        project_path = self._resolve_project_path()
+        self.task_package = AgentTaskPackage(
+            task_id=task_id,
+            title=title,
+            description=description,
+            assigned_agent="Codex Worker",
+            project_id=getattr(self, "project_id", ""),
+            project_path=project_path,
+            related_files=related_files,
+            constraints=[
+                "Work only inside the selected project workspace.",
+                "Do not commit, branch, push, or open a pull request.",
+                "Leave code changes as an uncommitted diff for Codex review.",
+            ],
+            expected_output=expected_output,
+        )
         self.current_task = task_id
         self.status = "working"
         self.progress = 0
@@ -296,12 +332,10 @@ class RealCodexAdapter(AgentAdapter):
         self.thread.start()
 
     def _resolve_project_path(self) -> str:
-        if not self.project_path:
-            raise RuntimeError("Project path is not configured for Codex Worker.")
-        path = Path(self.project_path)
-        if not path.is_dir():
-            raise RuntimeError(f"Project path does not exist: {self.project_path}")
-        return str(path.resolve())
+        try:
+            return str(resolve_existing_workspace(self.project_path))
+        except RuntimeError as exc:
+            raise RuntimeError(str(exc).replace("Project path", "Project path for Codex Worker")) from exc
 
     def _run_task(self, task_id: str, title: str, description: str, expected_output: str, related_files: list[str]) -> None:
         try:
@@ -310,7 +344,14 @@ class RealCodexAdapter(AgentAdapter):
             self.logs.append(f"[SYSTEM] Worker cwd: {project_path}")
             self.logs.append("[CODEX] Starting implementation run.")
             baseline_entries = parse_git_diff(get_git_diff(project_path))
-            prompt = build_worker_prompt(task_id, title, description, expected_output, related_files)
+            prompt = build_worker_prompt(
+                task_id,
+                title,
+                description,
+                expected_output,
+                related_files,
+                self.task_package.to_dict() if self.task_package else None,
+            )
             result = self.client.run(prompt, project_path, "danger-full-access")
             self.final_response = result.final_response
             self.progress = 85
@@ -343,3 +384,18 @@ class RealCodexAdapter(AgentAdapter):
 
     def get_progress(self) -> int:
         return self.progress
+
+    def capture_error(self) -> str | None:
+        return self.error
+
+    def capture_result(self) -> AgentRunResult | None:
+        if not self.current_task:
+            return None
+        return AgentRunResult(
+            agent_id="Codex Worker",
+            task_id=self.current_task,
+            status="completed" if self.status == "review" else self.status,
+            summary=self.final_response or self.error or "Codex Worker has not produced a result yet.",
+            files_changed=[entry["file_path"] for entry in self.diff_entries],
+            errors=[self.error] if self.error else [],
+        )

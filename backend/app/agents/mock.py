@@ -1,7 +1,12 @@
-import time
-from backend.app.agents.base import AgentAdapter
+from backend.app.agents.base import AgentAdapter, AgentRunResult
 
 class MockAgentAdapter(AgentAdapter):
+    adapter_kind = "Mock"
+    supports_workspace_execution = False
+    supports_file_modification = False
+    supports_streaming = True
+    supports_task_resume = False
+
     def __init__(self, agent_name: str):
         self.agent_name = agent_name
         self.status = "idle"
@@ -39,6 +44,17 @@ class MockAgentAdapter(AgentAdapter):
 
     def get_progress(self) -> int:
         return self.progress
+
+    def capture_result(self) -> AgentRunResult | None:
+        if self.current_task is None:
+            return None
+        return AgentRunResult(
+            agent_id=self.agent_name,
+            task_id=self.current_task,
+            status="completed" if self.status == "idle" and self.progress >= 90 else self.status,
+            summary="Mock adapter simulation completed. This is not a verified real worker run.",
+            errors=[],
+        )
 
     def update_simulation_step(self) -> bool:
         """

@@ -4,6 +4,21 @@ This document summarizes the audit, fixes, testing, and security hardening perfo
 
 ---
 
+## 2026-07-08 Adapter Stabilization Update
+
+The agent system has been re-audited. The old "safe development stubs" language below is no longer the target operating model.
+
+- Added a structured adapter contract with `AgentTaskPackage`, `AgentRunResult`, health checks, result/error capture, and capability flags.
+- Added explicit unavailable/misconfigured adapter handling so unsupported agents block visibly instead of simulating success.
+- Added real CLI adapter support for OpenCode, Blackbox, Kilocode, and Mimo Code using allowlisted non-interactive commands.
+- Kept mock adapters available only when `AI_TEAM_ENABLE_MOCK_ADAPTERS=true`.
+- Added `AGENT_ADAPTER_AUDIT.md`, `AGENT_ADAPTERS.md`, and `MULTI_AGENT_VERIFICATION_REPORT.md`.
+- Backend verification now includes 22 tests passing.
+
+Remaining risk: full live desktop workflow verification for each external CLI is still required before claiming every worker is production-verified.
+
+---
+
 ## 1. Summary of Audit Performed
 
 A complete end-to-end audit was conducted across all system boundaries:

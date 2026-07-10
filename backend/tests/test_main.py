@@ -4,8 +4,11 @@ import json
 import subprocess
 import pytest
 from fastapi.testclient import TestClient
+import backend.app.main as main_module
 from backend.app.database import get_db_connection
 from backend.app.agents.manager import agent_manager
+from backend.app.agents.antigravity_adapter import AntiGravityAdapter
+from backend.app.agents.cli_worker_adapter import CLIWorkerAdapter
 from backend.app.agents.real_codex_adapter import CodexExecFallbackClient, CodexRunResult, RealCodexAdapter
 
 def test_health_endpoint(client: TestClient):
@@ -240,6 +243,94 @@ def test_codex_sdk_worker_completes_with_real_diff_and_review(client: TestClient
     finally:
         agent_manager.adapters.pop(adapter_key, None)
         client.delete(f"/api/projects/{p_id}")
+
+def test_antigravity_worker_records_real_diff_for_review(client: TestClient, tmp_path):
+    project_dir = tmp_path / "antigravity-worker-project"
+    project_dir.mkdir()
+    tracked_file = project_dir / "service.py"
+    tracked_file.write_text("def handler():\n    return 'before'\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(["git", "add", "service.py"], cwd=project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "seed"],
+        cwd=project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    proj = client.post("/api/projects", json={
+        "name": "AntiGravity Worker Test",
+        "localPath": str(project_dir),
+        "branch": "main"
+    }).json()
+    p_id = proj["id"]
+
+    adapter_key = (p_id, "AntiGravity")
+    adapter = AntiGravityAdapter(project_path=str(project_dir))
+    adapter.start()
+    agent_manager.adapters[adapter_key] = adapter
+
+    try:
+        task_payload = {
+            "id": "T-401",
+            "title": "Create AntiGravity test artifact",
+            "agentName": "AntiGravity",
+            "status": "assigned",
+            "priority": "medium",
+            "progress": 0,
+            "description": "Write a visible AntiGravity smoke-test report.",
+            "relatedFiles": [],
+            "expectedOutput": "AntiGravity smoke-test report"
+        }
+        assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+        agent_manager.tick()
+        assert adapter.thread is not None, adapter.get_logs()
+        adapter.thread.join(timeout=10)
+        agent_manager.tick()
+
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-401")
+
+        assert task["status"] == "completed"
+        assert task["progress"] == 100
+        assert task["relatedFiles"] == ["ANTIGRAVITY_TASK_T-401.md"]
+        assert len(project["fileChanges"]) == 1
+        assert project["fileChanges"][0]["path"] == "ANTIGRAVITY_TASK_T-401.md"
+        assert "AntiGravity Task Report: T-401" in project["fileChanges"][0]["diffContent"]
+        assert "visible workspace artifact" in project["fileChanges"][0]["diffContent"]
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
+def test_antigravity_real_agy_command_uses_print_prompt():
+    adapter = AntiGravityAdapter(launch_command="agy --print-timeout 10m")
+    base_cmd = adapter._build_command()
+    prompt = "Implement task T-1"
+
+    cmd = adapter._build_agy_command(base_cmd, prompt)
+
+    assert cmd == ["agy", "--print-timeout", "10m", "--print", prompt]
+
+def test_antigravity_real_agy_command_respects_existing_prompt_flag():
+    adapter = AntiGravityAdapter(launch_command="agy --print")
+    base_cmd = adapter._build_command()
+    prompt = "Implement task T-1"
+
+    cmd = adapter._build_agy_command(base_cmd, prompt)
+
+    assert cmd == ["agy", "--print", prompt]
+
+
+def test_generic_cli_worker_builds_known_noninteractive_commands(monkeypatch):
+    monkeypatch.setattr("backend.app.agents.cli_worker_adapter.shutil.which", lambda command: command)
+    prompt = "Implement task T-1"
+
+    assert CLIWorkerAdapter("OpenCode", "opencode", "C:/tmp")._build_command(prompt) == ["opencode", "run", prompt]
+    assert CLIWorkerAdapter("Kilocode", "kilocode", "C:/tmp")._build_command(prompt) == ["kilocode", "run", prompt]
+    assert CLIWorkerAdapter("Mimo Code", "mimo", "C:/tmp")._build_command(prompt) == ["mimo", "run", prompt, "--trust", "--never-ask"]
+    assert CLIWorkerAdapter("Blackbox", "blackbox", "C:/tmp")._build_command(prompt) == ["blackbox", "--prompt", prompt, "--yolo", "--skip-update"]
 
 def test_codex_sdk_worker_blocks_on_runtime_failure(client: TestClient, tmp_path):
     project_dir = tmp_path / "codex-worker-fail"
@@ -552,10 +643,123 @@ def test_agent_management_constraints(client: TestClient):
     # Clean up project
     client.delete(f"/api/projects/{p_id}")
 
-def test_messages_and_codex_routing(client: TestClient):
+
+def test_task_package_generation_includes_workspace_and_review_rules(client: TestClient, tmp_path):
+    project_dir = tmp_path / "package-project"
+    project_dir.mkdir()
+    proj = client.post("/api/projects", json={
+        "name": "Task Package Project",
+        "localPath": str(project_dir),
+        "branch": "feature/test-packages",
+    }).json()
+    p_id = proj["id"]
+
+    task_payload = {
+        "id": "T-501",
+        "title": "Package task",
+        "agentName": "AntiGravity",
+        "status": "assigned",
+        "priority": "medium",
+        "progress": 0,
+        "description": "Verify structured task package.",
+        "relatedFiles": ["README.md"],
+        "expectedOutput": "structured package",
+    }
+    assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM tasks WHERE project_id = ? AND id = ?", (p_id, "T-501"))
+        task = cursor.fetchone()
+        package = agent_manager.build_task_package(task)
+    finally:
+        conn.close()
+        client.delete(f"/api/projects/{p_id}")
+
+    data = package.to_dict()
+    assert data["taskId"] == "T-501"
+    assert data["assignedAgent"] == "AntiGravity"
+    assert data["projectPath"] == str(project_dir)
+    assert data["branch"] == "feature/test-packages"
+    assert data["relatedFiles"] == ["README.md"]
+    assert any("Codex review" in rule for rule in data["constraints"])
+
+
+def test_unavailable_worker_blocks_task_instead_of_simulating_success(client: TestClient, tmp_path):
+    project_dir = tmp_path / "unavailable-worker-project"
+    project_dir.mkdir()
+    proj = client.post("/api/projects", json={
+        "name": "Unavailable Worker Project",
+        "localPath": str(project_dir),
+        "branch": "main",
+    }).json()
+    p_id = proj["id"]
+
+    agent_payload = {
+        "name": "OpenCode",
+        "role": "Frontend Specialist",
+        "status": "idle",
+        "currentTask": "None",
+        "progress": 0,
+        "lastActive": "Just now",
+        "avatar": "OC",
+        "logs": [],
+        "description": "Configured without a verified adapter",
+        "capabilities": ["frontend"],
+        "intelligenceLevel": "High",
+        "adapterType": "API",
+        "launchCommand": "",
+        "isEnabled": True,
+    }
+    assert client.post(f"/api/projects/{p_id}/agents", json=agent_payload).status_code == 200
+
+    task_payload = {
+        "id": "T-502",
+        "title": "Unsupported worker task",
+        "agentName": "OpenCode",
+        "status": "assigned",
+        "priority": "medium",
+        "progress": 0,
+        "description": "This should not be simulated.",
+        "relatedFiles": [],
+        "expectedOutput": "blocked state",
+    }
+    assert client.post(f"/api/projects/{p_id}/tasks", json=task_payload).status_code == 200
+
+    adapter_key = (p_id, "OpenCode")
+    agent_manager.adapters.pop(adapter_key, None)
+    try:
+        agent_manager.tick()
+        agent_manager.tick()
+        project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+        task = next(t for t in project["tasks"] if t["id"] == "T-502")
+        agent = next(a for a in project["agents"] if a["name"] == "OpenCode")
+
+        assert task["status"] == "blocked"
+        assert agent["status"] == "blocked"
+        assert any("unsupported or misconfigured" in log.lower() for log in agent["logs"])
+        assert any("could not run task T-502" in message["text"] for message in project["messages"])
+    finally:
+        agent_manager.adapters.pop(adapter_key, None)
+        client.delete(f"/api/projects/{p_id}")
+
+def test_messages_and_codex_routing(client: TestClient, monkeypatch):
+    class FakeChatCodexClient:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            self.calls.append((prompt, cwd, sandbox))
+            return CodexRunResult(final_response="Real Codex response about project progress.")
+
+    fake_chat_client = FakeChatCodexClient()
+    monkeypatch.setattr(main_module, "codex_chat_client", fake_chat_client)
+
+    workspace = tempfile.mkdtemp()
     payload = {
         "name": "Routing Project",
-        "localPath": "/tmp/routing-project",
+        "localPath": workspace,
         "branch": "main"
     }
     proj = client.post("/api/projects", json=payload).json()
@@ -576,8 +780,12 @@ def test_messages_and_codex_routing(client: TestClient):
     assert data["userMessage"]["id"] == "msg-101"
     assert data["codexMessage"] is not None
     assert data["codexMessage"]["sender"] == "Codex"
+    assert data["codexMessage"]["text"] == "Real Codex response about project progress."
+    assert fake_chat_client.calls[-1][1] == os.path.normcase(os.path.realpath(workspace))
+    assert fake_chat_client.calls[-1][2] == "read-only"
+    assert "Hello Codex, show me the plan." in fake_chat_client.calls[-1][0]
 
-    # 2. Direct-command worker agent in query -> Codex warning reply
+    # 2. Direct agent mentions should also receive a real Codex response
     msg_payload = {
         "id": "msg-102",
         "sender": "Aditya Gotra",
@@ -588,8 +796,8 @@ def test_messages_and_codex_routing(client: TestClient):
     response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
     assert response.status_code == 200
     data = response.json()
-    assert "direct communication with worker agents" in data["codexMessage"]["text"]
-    assert "AntiGravity" in data["codexMessage"]["text"]
+    assert data["codexMessage"]["text"] == "Real Codex response about project progress."
+    assert "@antigravity" in fake_chat_client.calls[-1][0]
 
     # 3. Implementation request should route to Codex Worker without old stub text
     msg_payload = {
@@ -627,14 +835,32 @@ def test_messages_and_codex_routing(client: TestClient):
     report_task = next(t for t in project["tasks"] if "report about what this app does" in t["title"].lower())
     assert report_task["agentName"] == "Codex Worker"
 
-    # 5. Status questions should remain conversational and not create another task
-    before_count = len(project["tasks"])
+    # 5. AntiGravity test requests should route to AntiGravity instead of the default worker
     msg_payload = {
         "id": "msg-105",
         "sender": "Aditya Gotra",
         "senderType": "user",
-        "text": "What is the current progress of the agents?",
+        "text": "I want to test antigravity so i want you to assign a testing task to it so that i can check if its working or not",
         "timestamp": "12:04 PM"
+    }
+    response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "AntiGravity" in data["codexMessage"]["text"]
+
+    project = next(p for p in client.get("/api/projects").json() if p["id"] == p_id)
+    antigravity_task = next(t for t in project["tasks"] if "test antigravity" in t["description"].lower())
+    assert antigravity_task["agentName"] == "AntiGravity"
+    assert antigravity_task["expectedOutput"] == "AntiGravity worker test task with uncommitted git diff."
+
+    # 6. Status questions should remain conversational and not create another task
+    before_count = len(project["tasks"])
+    msg_payload = {
+        "id": "msg-106",
+        "sender": "Aditya Gotra",
+        "senderType": "user",
+        "text": "What is the current progress of the agents?",
+        "timestamp": "12:05 PM"
     }
     response = client.post(f"/api/projects/{p_id}/messages", json=msg_payload)
     assert response.status_code == 200
@@ -646,6 +872,40 @@ def test_messages_and_codex_routing(client: TestClient):
 
     # Clean up project
     client.delete(f"/api/projects/{p_id}")
+    os.rmdir(workspace)
+
+
+def test_codex_chat_failure_is_explicit_and_keeps_user_message(client: TestClient, monkeypatch, tmp_path):
+    class FailingChatCodexClient:
+        def run(self, prompt: str, cwd: str, sandbox: str) -> CodexRunResult:
+            raise RuntimeError("Codex CLI is not signed in")
+
+    monkeypatch.setattr(main_module, "codex_chat_client", FailingChatCodexClient())
+    project = client.post("/api/projects", json={
+        "name": "Codex Chat Failure",
+        "localPath": str(tmp_path),
+        "branch": "main",
+    }).json()
+    project_id = project["id"]
+
+    response = client.post(f"/api/projects/{project_id}/messages", json={
+        "id": "msg-codex-failure",
+        "sender": "Aditya Gotra",
+        "senderType": "user",
+        "text": "Tell me what this project does.",
+        "timestamp": "12:10 PM",
+    })
+
+    assert response.status_code == 503
+    assert "Codex chat is unavailable" in response.json()["detail"]
+    stored_project = next(p for p in client.get("/api/projects").json() if p["id"] == project_id)
+    assert any(message["id"] == "msg-codex-failure" for message in stored_project["messages"])
+    assert not any(
+        message["senderType"] == "codex" and "Understood. If you want me" in message["text"]
+        for message in stored_project["messages"]
+    )
+
+    client.delete(f"/api/projects/{project_id}")
 
 def test_workspace_scanning_rules(client: TestClient):
     with tempfile.TemporaryDirectory() as temp_dir:
